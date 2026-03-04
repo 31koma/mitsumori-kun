@@ -9,6 +9,26 @@ import ReferencePriceScreen from './components/ReferencePriceScreen';
 export type ScreenType = 'top' | 'input' | 'estimate' | 'saved' | 'ref_edit';
 
 function App() {
+  const REQUIRED_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
+
+  const [isAuthorized, setIsAuthorized] = useState(() => {
+    if (!REQUIRED_PASSWORD) return true; // 設定されていない場合はパススルー
+    return sessionStorage.getItem('mitsumori-auth') === 'true';
+  });
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordInput === REQUIRED_PASSWORD) {
+      sessionStorage.setItem('mitsumori-auth', 'true');
+      setIsAuthorized(true);
+      setPasswordError('');
+    } else {
+      setPasswordError('パスワードが間違っています。');
+    }
+  };
+
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('top');
 
   const [items, setItems] = useState<EstimateItem[]>(() => {
@@ -224,6 +244,31 @@ function App() {
   const handleDeleteSavedEstimate = (id: string) => {
     setSavedEstimates(prev => prev.filter(e => e.id !== id));
   };
+
+  if (!isAuthorized) {
+    return (
+      <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem' }}>
+        <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '2rem', textAlign: 'center', margin: '0 auto' }}>
+          <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem', color: 'var(--primary)', border: 'none', padding: 0 }}>電気工事見積もりくん</h1>
+          <p style={{ marginBottom: '1.5rem', color: 'var(--text-main)', fontSize: '0.875rem' }}>利用するにはパスワードを入力してください</p>
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              placeholder="パスワード"
+              style={{ padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', fontSize: '1rem', width: '100%', boxSizing: 'border-box' }}
+              autoFocus
+            />
+            {passwordError && <p style={{ color: '#ef4444', fontSize: '0.875rem', margin: 0, textAlign: 'left' }}>{passwordError}</p>}
+            <button type="submit" className="btn btn-primary btn-large" style={{ marginTop: '0.5rem' }}>
+              ログイン
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
