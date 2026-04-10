@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
-import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate } from './types';
+import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate, type PlotPlacement, type Category, type PlotDrawingState } from './types';
 import TopScreen from './components/TopScreen';
 import InputScreen from './components/InputScreen';
 import EstimateScreen from './components/EstimateScreen';
 import SavedEstimatesScreen from './components/SavedEstimatesScreen';
 import ReferencePriceScreen from './components/ReferencePriceScreen';
+import DrawingPlotScreen from './components/DrawingPlotScreen';
 
-export type ScreenType = 'top' | 'input' | 'estimate' | 'saved' | 'ref_edit';
+export type ScreenType = 'top' | 'plot' | 'input' | 'estimate' | 'saved' | 'ref_edit';
 
 function App() {
   const REQUIRED_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
@@ -105,6 +106,14 @@ function App() {
   const [copperRateDate, setCopperRateDate] = useState<string>(() => {
     return localStorage.getItem('mitsumori-kun-copper-date') || '2026/03/02';
   });
+  const [plotDrawing, setPlotDrawing] = useState<PlotDrawingState>({
+    name: '',
+    width: 0,
+    height: 0,
+    src: '',
+  });
+  const [plotPlacements, setPlotPlacements] = useState<PlotPlacement[]>([]);
+  const [plotScale, setPlotScale] = useState(1);
 
   // Save to local storage whenever items or info change
   useEffect(() => {
@@ -153,6 +162,68 @@ function App() {
 
   const removeItem = (id: string) => {
     setItems(prev => prev.filter(i => i.id !== id));
+  };
+
+  const detectCategoryFromPlotName = (name: string): Category => {
+    if (name.includes('コンセント') || name.includes('スイッチ') || name.includes('ボックス') || name.includes('シーリング')) return '配線器具';
+    if (name.includes('照明') || name.includes('換気扇') || name.includes('盤') || name.includes('ベースライト') || name === 'DL') return '機器';
+    return '配線器具';
+  };
+
+  const normalizePlotItemName = (name: string): string => {
+    const trimmed = name.trim();
+    if (trimmed === 'switch') return 'スイッチ';
+    if (trimmed === 'outlet') return 'コンセント';
+    if (trimmed === 'three_way_switch') return '3路スイッチ';
+    if (trimmed === 'light') return '照明';
+    if (trimmed === 'junction_box') return 'ジョイントボックス';
+    return trimmed;
+  };
+
+  const applyPlotPlacements = (placements: PlotPlacement[]) => {
+    const aggregated = new Map<string, { count: number; category: Category }>();
+
+    placements.forEach((placement) => {
+      const itemName = normalizePlotItemName(placement.name);
+      if (!itemName) return;
+      const current = aggregated.get(itemName);
+      if (current) {
+        current.count += 1;
+      } else {
+        aggregated.set(itemName, { count: 1, category: detectCategoryFromPlotName(itemName) });
+      }
+    });
+
+    if (!aggregated.size) {
+      alert('反映できる図面プロットがありませんでした。');
+      return;
+    }
+
+    aggregated.forEach((entry, itemName) => {
+      const existingItem = items.find(i => i.name === itemName);
+      if (existingItem) {
+        const nextQuantity = Number(existingItem.quantity || 0) + entry.count;
+        updateItem(existingItem.id, {
+          quantity: String(nextQuantity),
+          selected: true
+        });
+      } else {
+        const defaultUnit = entry.category === '人工' ? '人工' : (entry.category === '経費' ? '' : (entry.category === '電線' || entry.category === '配管' ? 'm' : '個'));
+        addItem({
+          id: 'dyn_plot_' + Date.now() + Math.random(),
+          name: itemName,
+          category: entry.category,
+          quantity: String(entry.count),
+          unit: defaultUnit,
+          unitPrice: '',
+          selected: true,
+          itemType: 'free'
+        });
+      }
+    });
+
+    alert(`図面プロットから ${aggregated.size} 種類の項目を反映しました。`);
+    setCurrentScreen('input');
   };
 
   const generateNextEstimateNumber = () => {
@@ -275,8 +346,22 @@ function App() {
       {currentScreen === 'top' && (
         <TopScreen
           onStart={() => setCurrentScreen('input')}
+          onOpenPlot={() => setCurrentScreen('plot')}
           onViewSaved={() => setCurrentScreen('saved')}
           hasSavedCount={savedEstimates.length}
+        />
+      )}
+
+      {currentScreen === 'plot' && (
+        <DrawingPlotScreen
+          onBack={() => setCurrentScreen('top')}
+          onApplyToEstimate={applyPlotPlacements}
+          drawing={plotDrawing}
+          placements={plotPlacements}
+          scale={plotScale}
+          onDrawingChange={setPlotDrawing}
+          onPlacementsChange={setPlotPlacements}
+          onScaleChange={setPlotScale}
         />
       )}
 
@@ -296,6 +381,7 @@ function App() {
           onNext={() => setCurrentScreen('estimate')}
           onReset={clearData}
           onEditRefPrice={() => setCurrentScreen('ref_edit')}
+          onOpenPlot={() => setCurrentScreen('plot')}
         />
       )}
 

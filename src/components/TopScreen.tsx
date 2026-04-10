@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
-import { FileEdit, Upload, FileSpreadsheet, Save, Trash2 } from 'lucide-react';
+import { FileEdit, Upload, FileSpreadsheet, Save, Trash2, MapPinned } from 'lucide-react';
 
 interface TopScreenProps {
     onStart: () => void;
+    onOpenPlot: () => void;
     onViewSaved: () => void;
     hasSavedCount: number;
 }
 
-export default function TopScreen({ onStart, onViewSaved, hasSavedCount }: TopScreenProps) {
+export default function TopScreen({ onStart, onOpenPlot, onViewSaved, hasSavedCount }: TopScreenProps) {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const invoiceInputRef = useRef<HTMLInputElement>(null);
     const [hasTemplate, setHasTemplate] = useState(false);
@@ -141,6 +142,11 @@ export default function TopScreen({ onStart, onViewSaved, hasSavedCount }: TopSc
                 </div>
 
                 <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <button className="btn btn-primary btn-large" onClick={onOpenPlot}>
+                        <MapPinned size={24} />
+                        図面プロットから始める
+                    </button>
+
                     <button className="btn btn-primary btn-large" onClick={onStart}>
                         <FileEdit size={24} />
                         見積データ入力へ進む

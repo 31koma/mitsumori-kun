@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { type EstimateItem, type Category, type EstimateInfo } from '../types';
-import { ChevronRight, ChevronDown, Trash2, Sparkles } from 'lucide-react';
+import { defaultItems, type EstimateItem, type Category, type EstimateInfo } from '../types';
+import { ChevronRight, ChevronDown, Trash2, Sparkles, MapPinned } from 'lucide-react';
 
 interface InputScreenProps {
     items: EstimateItem[];
@@ -17,14 +17,20 @@ interface InputScreenProps {
     onNext: () => void;
     onReset: () => void;
     onEditRefPrice?: () => void;
+    onOpenPlot?: () => void;
 }
 
 const CATEGORIES: Category[] = ['電線', '配管', '配線器具', '機器', '人工', '経費'];
+const DEVICE_SUGGESTIONS = defaultItems
+    .filter((item) => item.category === '配線器具' && !item.itemType)
+    .map((item) => item.name);
 
-export default function InputScreen({ items, info, customRefs, copperRate, copperRateDate, updateItem, updateInfo, updateCustomRef, onUpdateCopperRate, addItem, removeItem, onNext, onReset, onEditRefPrice }: InputScreenProps) {
+export default function InputScreen({ items, info, customRefs, copperRate, copperRateDate, updateItem, updateInfo, updateCustomRef, onUpdateCopperRate, addItem, removeItem, onNext, onReset, onEditRefPrice, onOpenPlot }: InputScreenProps) {
     const [openCategories, setOpenCategories] = useState<Set<Category>>(new Set());
     const [aiText, setAiText] = useState('');
     const [isAIOpen, setIsAIOpen] = useState(false);
+    const [plotJsonText, setPlotJsonText] = useState('');
+    const [isPlotOpen, setIsPlotOpen] = useState(false);
 
     const toggleCategory = (category: Category) => {
         setOpenCategories(prev => {
@@ -171,6 +177,100 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
         }
     };
 
+    const detectCategoryFromPlotName = (name: string): Category => {
+        if (name.includes('コンセント') || name.includes('スイッチ') || name.includes('ボックス') || name.includes('シーリング')) {
+            return '配線器具';
+        }
+        if (name.includes('照明') || name.includes('換気扇') || name.includes('盤') || name.includes('ベースライト') || name === 'DL') {
+            return '機器';
+        }
+        return '配線器具';
+    };
+
+    const normalizePlotItemName = (name: string): string => {
+        const trimmed = name.trim();
+        if (trimmed === 'switch') return 'スイッチ';
+        if (trimmed === 'outlet') return 'コンセント';
+        if (trimmed === 'three_way_switch') return '3路スイッチ';
+        if (trimmed === 'light') return '照明';
+        if (trimmed === 'junction_box') return 'ジョイントボックス';
+        return trimmed;
+    };
+
+    const handleImportPlotJson = () => {
+        if (!plotJsonText.trim()) return;
+
+        try {
+            const parsed = JSON.parse(plotJsonText);
+            const placements = Array.isArray(parsed?.placements) ? parsed.placements : [];
+
+            if (!placements.length) {
+                alert('placements 配列が見つかりませんでした。図面プロットJSONを確認してください。');
+                return;
+            }
+
+            const aggregated = new Map<string, { count: number; category: Category }>();
+
+            placements.forEach((placement: any) => {
+                const rawName = typeof placement?.name === 'string' ? placement.name : '';
+                const normalizedName = normalizePlotItemName(rawName);
+                if (!normalizedName) return;
+
+                const category = detectCategoryFromPlotName(normalizedName);
+                const current = aggregated.get(normalizedName);
+                if (current) {
+                    current.count += 1;
+                } else {
+                    aggregated.set(normalizedName, { count: 1, category });
+                }
+            });
+
+            let importedCount = 0;
+
+            aggregated.forEach((entry, itemName) => {
+                const existingItem = items.find(i => i.name === itemName);
+                if (existingItem) {
+                    const nextQuantity = Number(existingItem.quantity || 0) + entry.count;
+                    updateItem(existingItem.id, {
+                        quantity: String(nextQuantity),
+                        selected: true
+                    });
+                } else {
+                    const defaultUnit = entry.category === '人工' ? '人工' : (entry.category === '経費' ? '' : (entry.category === '電線' || entry.category === '配管' ? 'm' : '個'));
+                    addItem({
+                        id: 'dyn_plot_' + Date.now() + Math.random(),
+                        name: itemName,
+                        category: entry.category,
+                        quantity: String(entry.count),
+                        unit: defaultUnit,
+                        unitPrice: '',
+                        selected: true,
+                        itemType: 'free'
+                    });
+                }
+                importedCount += 1;
+            });
+
+            alert(`図面プロットJSONから ${importedCount} 種類の項目を反映しました。`);
+            setPlotJsonText('');
+            setIsPlotOpen(false);
+        } catch (error) {
+            console.error(error);
+            alert('図面プロットJSONの読み込みに失敗しました。JSON形式を確認してください。');
+        }
+    };
+
+    const handlePastePlotJson = async () => {
+        try {
+            const clipboardText = await navigator.clipboard.readText();
+            setPlotJsonText(clipboardText);
+            setIsPlotOpen(true);
+        } catch (error) {
+            console.error(error);
+            alert('クリップボードの読み取りに失敗しました。手動で貼り付けてください。');
+        }
+    };
+
     const CABLE_NAMES = { cv: 'CV', cvt: 'CVT', slat: 'ニュースラ（NS）' };
 
     return (
@@ -179,6 +279,15 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                 <h1 style={{ margin: 0 }}>項目入力</h1>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        {onOpenPlot && (
+                            <button
+                                className="btn btn-secondary"
+                                onClick={onOpenPlot}
+                                style={{ fontSize: '0.875rem', padding: '0.4rem 0.75rem', color: 'var(--primary)', borderColor: 'var(--primary)' }}
+                            >
+                                <MapPinned size={16} /> 画像プロットへ戻る
+                            </button>
+                        )}
                         {onEditRefPrice && (
                             <button
                                 className="btn btn-secondary"
@@ -295,6 +404,59 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                         <button className="btn btn-primary" onClick={handleParseAI} style={{ width: '100%' }}>
                             <Sparkles size={16} /> 結果を反映する
                         </button>
+                    </div>
+                )}
+            </section>
+
+            <section className="card" style={{ padding: '0', overflow: 'hidden', marginBottom: '1rem', border: '1px solid var(--primary)' }}>
+                <button
+                    onClick={() => setIsPlotOpen(!isPlotOpen)}
+                    style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        padding: '1.5rem',
+                        background: 'rgba(15, 118, 110, 0.05)',
+                        border: 'none',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        color: 'var(--primary)',
+                        borderBottom: isPlotOpen ? '1px solid var(--border-color)' : 'none'
+                    }}
+                >
+                    {isPlotOpen ? <ChevronDown size={24} /> : <ChevronRight size={24} />}
+                    <h2 style={{ margin: 0, padding: 0, border: 'none', fontSize: '1.2rem' }}>図面プロットJSON 読み込み</h2>
+                </button>
+                {isPlotOpen && (
+                    <div style={{ padding: '1.5rem' }}>
+                        <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: '1.5' }}>
+                            図面プロットアプリの保持データ JSON を貼り付けると、配置した記号を見積項目へ反映します。<br />
+                            既存項目があれば数量に加算し、無い項目は自由入力として追加します。
+                        </p>
+                        <textarea
+                            value={plotJsonText}
+                            onChange={(e) => setPlotJsonText(e.target.value)}
+                            placeholder={'{\n  "drawing": {...},\n  "placements": [\n    { "name": "コンセント", "x": 120, "y": 240 }\n  ]\n}'}
+                            style={{
+                                width: '100%',
+                                minHeight: '160px',
+                                padding: '0.75rem',
+                                borderRadius: 'var(--radius-sm)',
+                                border: '1px solid var(--border-color)',
+                                resize: 'vertical',
+                                marginBottom: '1rem',
+                                fontFamily: 'inherit'
+                            }}
+                        />
+                        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                            <button className="btn btn-secondary" onClick={handlePastePlotJson}>
+                                クリップボードから貼り付け
+                            </button>
+                            <button className="btn btn-primary" onClick={handleImportPlotJson}>
+                                図面プロットを反映する
+                            </button>
+                        </div>
                     </div>
                 )}
             </section>
@@ -442,6 +604,7 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                                                         <input
                                                             type="text"
                                                             value={item.name}
+                                                            list={category === '配線器具' ? 'device-suggestion-list' : undefined}
                                                             onChange={(e) => handleUpdateItem(item.id, {
                                                                 name: e.target.value,
                                                                 selected: !!e.target.value || item.selected
@@ -570,6 +733,11 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                     <ChevronRight size={20} />
                 </button>
             </div>
+            <datalist id="device-suggestion-list">
+                {DEVICE_SUGGESTIONS.map((name) => (
+                    <option key={name} value={name} />
+                ))}
+            </datalist>
         </div>
     );
 }

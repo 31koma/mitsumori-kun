@@ -30,6 +30,26 @@ export interface SavedEstimate {
     estimateNumber: string;
 }
 
+export interface PlotPlacement {
+    id: string;
+    order: number;
+    type: string;
+    name: string;
+    symbol: string;
+    x: number;
+    y: number;
+    xRatio: number;
+    yRatio: number;
+    positionLabel: string;
+}
+
+export interface PlotDrawingState {
+    name: string;
+    width: number;
+    height: number;
+    src: string;
+}
+
 export const defaultInfo: EstimateInfo = {
     customerName: '',
     projectName: '',
@@ -94,7 +114,7 @@ export const defaultItems: EstimateItem[] = [
     { id: 'c3_4', name: '3路スイッチ', category: '配線器具', quantity: '', unit: '個', unitPrice: 1800, referencePrice: '1500〜2200円', selected: false },
     { id: 'c3_5', name: '4路スイッチ', category: '配線器具', quantity: '', unit: '個', unitPrice: 2500, referencePrice: '2000〜3000円', selected: false },
     { id: 'c3_6', name: '防水コンセント', category: '配線器具', quantity: '', unit: '個', unitPrice: 2500, referencePrice: '2000〜3000円', selected: false },
-    { id: 'c3_7', name: '動力コンセント', category: '配線器具', quantity: '', unit: '個', unitPrice: 8000, referencePrice: '7000〜9500円', selected: false },
+    { id: 'c3_7', name: '3P 20A 引掛形コンセント（埋込/露出）', category: '配線器具', quantity: '', unit: '個', unitPrice: 8200, referencePrice: '7,500〜9,000円', selected: false },
     { id: 'c3_8', name: '引掛シーリング', category: '配線器具', quantity: '', unit: '個', unitPrice: 1200, referencePrice: '1000〜1500円', selected: false },
     { id: 'c3_9', name: '露出ボックス', category: '配線器具', quantity: '', unit: '個', unitPrice: 600, referencePrice: '500〜800円', selected: false },
     { id: 'c3_10', name: '埋込ボックス', category: '配線器具', quantity: '', unit: '個', unitPrice: 300, referencePrice: '250〜450円', selected: false },
@@ -111,6 +131,11 @@ export const defaultItems: EstimateItem[] = [
     { id: 'c3_23', name: '20A 接地極付埋込コンセント (2EET/125V)', category: '配線器具', quantity: '', unit: '個', unitPrice: 2700, referencePrice: '2,200〜3,200円', selected: false },
     { id: 'c3_24', name: '20A 接地極付埋込コンセント (2EET/250V)', category: '配線器具', quantity: '', unit: '個', unitPrice: 3300, referencePrice: '2,800〜3,800円', selected: false },
     { id: 'c3_25', name: '埋込アースターミナル付接地コンセント', category: '配線器具', quantity: '', unit: '個', unitPrice: 2150, referencePrice: '1,800〜2,500円', selected: false },
+    { id: 'c3_26', name: '家具コンセント', category: '配線器具', quantity: '', unit: '個', unitPrice: 3500, referencePrice: '3,000〜4,000円', selected: false },
+    { id: 'c3_27', name: '3P 30A 引掛形コンセント（埋込/露出）', category: '配線器具', quantity: '', unit: '個', unitPrice: 9800, referencePrice: '9,000〜11,000円', selected: false },
+    { id: 'c3_28', name: '接地3P 20A 引掛形コンセント（4P / 250V）', category: '配線器具', quantity: '', unit: '個', unitPrice: 11200, referencePrice: '10,000〜12,500円', selected: false },
+    { id: 'c3_29', name: '接地3P 30A 引掛形コンセント（4P / 250V）', category: '配線器具', quantity: '', unit: '個', unitPrice: 13800, referencePrice: '12,500〜15,000円', selected: false },
+    { id: 'c3_30', name: '防水形動力コンセント（屋外・工場用）', category: '配線器具', quantity: '', unit: '個', unitPrice: 15800, referencePrice: '14,000〜17,500円', selected: false },
 
     // 機器
     { id: 'c4_1', name: '換気扇', category: '機器', quantity: '', unit: '台', unitPrice: 8000, referencePrice: '7000〜10000円', selected: false },
@@ -123,6 +148,8 @@ export const defaultItems: EstimateItem[] = [
     { id: 'c4_8', name: '漏電遮断器（2P1E/20A）', category: '機器', quantity: '', unit: '個', unitPrice: 5500, referencePrice: '4,500〜6,500円', selected: false },
     { id: 'c4_9', name: '漏電遮断器（3P2E/50A）', category: '機器', quantity: '', unit: '個', unitPrice: 15000, referencePrice: '12,000〜18,000円', selected: false },
     { id: 'c4_10', name: '電力量計ボックス', category: '機器', quantity: '', unit: '個', unitPrice: 4500, referencePrice: '3,500〜5,500円', selected: false },
+    { id: 'c4_11', name: 'ベースライト', category: '機器', quantity: '', unit: '台', unitPrice: 12000, referencePrice: '10,000〜15,000円', selected: false },
+    { id: 'c4_12', name: 'DL', category: '機器', quantity: '', unit: '台', unitPrice: 8500, referencePrice: '7,000〜10,000円', selected: false },
 
     // 人工
     { id: 'c5_1', name: '人工費', category: '人工', quantity: '', unit: '人工', unitPrice: 20000, referencePrice: '18000〜25000円', selected: false },
