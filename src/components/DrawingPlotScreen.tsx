@@ -22,6 +22,7 @@ import {
 
 import {
     defaultItems,
+    type ConstructionBox,
     type ConstructionPageState,
     type ConstructionDrawingState,
     type EraserShape,
@@ -38,7 +39,7 @@ const SYMBOL_COLORS = ['#2563eb', '#0f766e', '#0369a1', '#d97706', '#7c3aed', '#
 const DEFAULT_ERASER_WIDTH = 14;
 
 type WorkspaceMode = 'quantity' | 'construction';
-type ConstructionTool = 'select' | 'wire' | 'orthogonalWire' | 'eraseLine' | 'eraseRect' | 'text';
+type ConstructionTool = 'select' | 'wire' | 'orthogonalWire' | 'eraseLine' | 'eraseRect' | 'text' | 'box';
 type SymbolType = { key: string; name: string; short: string; color: string; label?: string };
 type PaletteGroup = { key: string; label: string; short: string; color: string; children: SymbolType[] };
 type OpenPalettePanel = { groupKey: string; top: number; left: number } | null;
@@ -48,7 +49,9 @@ type DragState =
     | { kind: 'eraser'; shapeKind: 'line' | 'rect'; start: WiringPoint; current: WiringPoint }
     | { kind: 'label'; wireId: string; startX: number; startY: number; originX: number; originY: number }
     | { kind: 'point'; wireId: string; pointIndex: number }
-    | { kind: 'wire'; wireId: string; start: WiringPoint; originalPoints: WiringPoint[]; originalLabel: WiringPoint };
+    | { kind: 'wire'; wireId: string; start: WiringPoint; originalPoints: WiringPoint[]; originalLabel: WiringPoint }
+    | { kind: 'box'; boxId: string; start: WiringPoint; originalBox: ConstructionBox }
+    | { kind: 'boxResize'; boxId: string; handle: 'nw' | 'ne' | 'sw' | 'se'; start: WiringPoint; originalBox: ConstructionBox; keepRatio: boolean };
 
 const DEFAULT_LINE_TYPES: WiringLineType[] = [
     { id: 'vvf16-2c', name: 'VVF 1.6-2C', label: '1.6-2C', color: '#1d4ed8', width: 4, dash: '' },
@@ -219,6 +222,7 @@ export default function DrawingPlotScreen({
     const [selectedLineTypeId, setSelectedLineTypeId] = useState(construction.lineTypes[0]?.id ?? DEFAULT_LINE_TYPES[0].id);
     const [selectedWireId, setSelectedWireId] = useState<string>('');
     const [selectedEraserId, setSelectedEraserId] = useState<string>('');
+    const [selectedBoxId, setSelectedBoxId] = useState<string>('');
     const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
     const [draftWirePoints, setDraftWirePoints] = useState<WiringPoint[]>([]);
     const [previewPoint, setPreviewPoint] = useState<WiringPoint | null>(null);
@@ -229,6 +233,8 @@ export default function DrawingPlotScreen({
     const [palettePosition, setPalettePosition] = useState<PalettePosition>({ top: 12, left: 12 });
     const [dragState, setDragState] = useState<DragState>({ kind: 'none' });
     const [redoStack, setRedoStack] = useState<ConstructionDrawingState[]>([]);
+    const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+    const [panDrag, setPanDrag] = useState<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
 
     const normalizedConstruction = useMemo(
         () => ({
@@ -265,14 +271,16 @@ export default function DrawingPlotScreen({
             return {
                 wires: normalizedConstruction.wires,
                 erasers: normalizedConstruction.erasers,
+                boxes: [],
                 scaleMetersPerPixel: normalizedConstruction.scaleMetersPerPixel,
             };
         }
-        return { wires: [], erasers: [], scaleMetersPerPixel: normalizedConstruction.scaleMetersPerPixel || 0.01 };
+        return { wires: [], erasers: [], boxes: [], scaleMetersPerPixel: normalizedConstruction.scaleMetersPerPixel || 0.01 };
     };
     const currentPageConstruction = getPageConstruction(currentPageNumber);
     const selectedLineType = normalizedConstruction.lineTypes.find((type) => type.id === selectedLineTypeId) ?? normalizedConstruction.lineTypes[0];
     const selectedWire = currentPageConstruction.wires.find((wire) => wire.id === selectedWireId);
+    const selectedBox = currentPageConstruction.boxes?.find((box) => box.id === selectedBoxId);
     const currentPlacements = useMemo(
         () => placements.filter((placement) => (placement.pageNumber ?? 1) === currentPageNumber),
         [placements, currentPageNumber],
@@ -322,19 +330,31 @@ export default function DrawingPlotScreen({
             name: symbol.label ?? symbol.name,
             count: placements.filter((placement) => (placement.pageNumber ?? 1) === page.pageNumber && placement.type === symbol.key).length,
         })).filter((item) => item.count > 0);
-        return { page, wires: Array.from(wires.entries()), devices };
+        const boxes = new Map<string, number>();
+        (pageState.boxes ?? []).forEach((box) => boxes.set(box.label, (boxes.get(box.label) ?? 0) + 1));
+        return { page, wires: Array.from(wires.entries()), devices, boxes: Array.from(boxes.entries()) };
     });
+
+    const boxSummary = (() => {
+        const summary = new Map<string, number>();
+        drawingPages.forEach((page) => {
+            const pageState = getPageConstruction(page.pageNumber);
+            (pageState.boxes ?? []).forEach((box) => summary.set(box.label, (summary.get(box.label) ?? 0) + 1));
+        });
+        return Array.from(summary.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    })();
 
     const selectedSymbol = DEVICE_ITEMS.find((symbol) => symbol.key === selectedSymbolKey) ?? DEVICE_ITEMS[0];
 
     const updateStatus = (message: string) => setStatus(message);
-    const updateConstruction = (updates: Partial<ConstructionDrawingState>, options: { keepRedo?: boolean } = {}) => {
+    const updateConstruction = (updates: Partial<ConstructionDrawingState & ConstructionPageState>, options: { keepRedo?: boolean } = {}) => {
         const currentPageUpdates =
-            updates.wires || updates.erasers || updates.scaleMetersPerPixel !== undefined
+            updates.wires || updates.erasers || updates.boxes || updates.scaleMetersPerPixel !== undefined
                 ? {
                       ...currentPageConstruction,
                       wires: updates.wires ?? currentPageConstruction.wires,
                       erasers: updates.erasers ?? currentPageConstruction.erasers,
+                      boxes: updates.boxes ?? currentPageConstruction.boxes ?? [],
                       scaleMetersPerPixel: updates.scaleMetersPerPixel ?? currentPageConstruction.scaleMetersPerPixel,
                   }
                 : currentPageConstruction;
@@ -543,6 +563,30 @@ export default function DrawingPlotScreen({
     };
 
     const handleConstructionClick = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (panDrag) return;
+        if (workspaceMode === 'construction' && constructionTool === 'box') {
+            const point = getCanvasPoint(event);
+            if (!point) return;
+            const newBox: ConstructionBox = {
+                id: crypto.randomUUID(),
+                label: 'JB',
+                x: Math.round(point.x - 50),
+                y: Math.round(point.y - 50),
+                width: 100,
+                height: 100,
+                strokeColor: '#111827',
+                strokeWidth: 3,
+                fillColor: '#ffffff',
+                fontSize: 24,
+                rotation: 0,
+            };
+            updateConstruction({ boxes: [...(currentPageConstruction.boxes ?? []), newBox] });
+            setSelectedBoxId(newBox.id);
+            setSelectedWireId('');
+            setSelectedEraserId('');
+            updateStatus('ジョイントボックスを配置しました。右側の属性で表示名やサイズを変更できます。');
+            return;
+        }
         if (workspaceMode !== 'construction' || (constructionTool !== 'wire' && constructionTool !== 'orthogonalWire')) return;
         const point = getCanvasPoint(event);
         if (!point) return;
@@ -554,6 +598,13 @@ export default function DrawingPlotScreen({
     };
 
     const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (panDrag) {
+            setPanOffset({
+                x: panDrag.originX + event.clientX - panDrag.startX,
+                y: panDrag.originY + event.clientY - panDrag.startY,
+            });
+            return;
+        }
         if (workspaceMode !== 'construction') return;
         const point = getCanvasPoint(event);
         if (!point) return;
@@ -597,20 +648,83 @@ export default function DrawingPlotScreen({
                         : wire,
                 ),
             }, { keepRedo: true });
+        } else if (dragState.kind === 'box') {
+            const dx = point.x - dragState.start.x;
+            const dy = point.y - dragState.start.y;
+            updateConstruction({
+                boxes: (currentPageConstruction.boxes ?? []).map((box) =>
+                    box.id === dragState.boxId
+                        ? { ...box, x: Math.round(dragState.originalBox.x + dx), y: Math.round(dragState.originalBox.y + dy) }
+                        : box,
+                ),
+            }, { keepRedo: true });
+        } else if (dragState.kind === 'boxResize') {
+            const dx = point.x - dragState.start.x;
+            const dy = point.y - dragState.start.y;
+            const original = dragState.originalBox;
+            let nextX = original.x;
+            let nextY = original.y;
+            let nextWidth = original.width;
+            let nextHeight = original.height;
+
+            if (dragState.handle.includes('e')) nextWidth = original.width + dx;
+            if (dragState.handle.includes('s')) nextHeight = original.height + dy;
+            if (dragState.handle.includes('w')) {
+                nextX = original.x + dx;
+                nextWidth = original.width - dx;
+            }
+            if (dragState.handle.includes('n')) {
+                nextY = original.y + dy;
+                nextHeight = original.height - dy;
+            }
+
+            if (dragState.keepRatio) {
+                const ratio = original.width / Math.max(original.height, 1);
+                if (Math.abs(nextWidth - original.width) >= Math.abs(nextHeight - original.height)) {
+                    nextHeight = nextWidth / ratio;
+                } else {
+                    nextWidth = nextHeight * ratio;
+                }
+                if (dragState.handle.includes('w')) nextX = original.x + original.width - nextWidth;
+                if (dragState.handle.includes('n')) nextY = original.y + original.height - nextHeight;
+            }
+
+            nextWidth = Math.max(20, nextWidth);
+            nextHeight = Math.max(20, nextHeight);
+            updateConstruction({
+                boxes: (currentPageConstruction.boxes ?? []).map((box) =>
+                    box.id === dragState.boxId
+                        ? { ...box, x: Math.round(nextX), y: Math.round(nextY), width: Math.round(nextWidth), height: Math.round(nextHeight) }
+                        : box,
+                ),
+            }, { keepRedo: true });
         }
     };
 
     const handleConstructionMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (event.button === 1) {
+            event.preventDefault();
+            setPanDrag({ startX: event.clientX, startY: event.clientY, originX: panOffset.x, originY: panOffset.y });
+            updateStatus('パン移動中です。中ボタンを押したまま図面を動かせます。');
+            return;
+        }
+        if (event.button !== 0) return;
         if (workspaceMode !== 'construction' || (constructionTool !== 'eraseLine' && constructionTool !== 'eraseRect')) return;
         const point = getCanvasPoint(event);
         if (!point) return;
         event.preventDefault();
         setSelectedWireId('');
         setSelectedEraserId('');
+        setSelectedBoxId('');
         setDragState({ kind: 'eraser', shapeKind: constructionTool === 'eraseLine' ? 'line' : 'rect', start: point, current: point });
     };
 
     const handleMouseUp = () => {
+        if (panDrag) {
+            setPanDrag(null);
+            updateStatus('パン移動を終了しました。');
+            return;
+        }
         if (dragState.kind === 'eraser') {
             const nextShape: EraserShape = {
                 id: crypto.randomUUID(),
@@ -652,6 +766,12 @@ export default function DrawingPlotScreen({
                 updateStatus('最後の消し込みを削除しました。');
                 return;
             }
+            if ((currentPageConstruction.boxes ?? []).length) {
+                setRedoStack([normalizedConstruction, ...redoStack]);
+                updateConstruction({ boxes: (currentPageConstruction.boxes ?? []).slice(0, -1) }, { keepRedo: true });
+                updateStatus('最後の図形を削除しました。');
+                return;
+            }
         }
 
         if (!currentPlacements.length) {
@@ -683,8 +803,9 @@ export default function DrawingPlotScreen({
     const handleClear = () => {
         if (workspaceMode === 'construction') {
             if (!confirm('施工図制作モードの消し込み・配線・ラベルをすべて消去しますか？')) return;
-            updateConstruction({ wires: [], erasers: [] });
+            updateConstruction({ wires: [], erasers: [], boxes: [] });
             setSelectedWireId('');
+            setSelectedBoxId('');
             setDraftWirePoints([]);
             updateStatus('施工図レイヤーをすべて消去しました。');
             return;
@@ -736,7 +857,29 @@ export default function DrawingPlotScreen({
             return;
         }
         onScaleChange(fitScaleToViewport(activeDrawing.width, activeDrawing.height));
+        setPanOffset({ x: 0, y: 0 });
         updateStatus('図面全体が見やすい倍率に合わせました。');
+    };
+
+    const handleDrawingWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+        if (workspaceMode !== 'construction') return;
+        event.preventDefault();
+        if (!activeDrawing.width || !activeDrawing.height) return;
+
+        const nextScale = Math.max(0.25, Math.min(4, Number((scale * (event.deltaY < 0 ? 1.1 : 0.9)).toFixed(3))));
+        if (nextScale === scale) return;
+
+        const rect = event.currentTarget.getBoundingClientRect();
+        const pointerX = event.clientX - rect.left;
+        const pointerY = event.clientY - rect.top;
+        const drawingX = (pointerX - panOffset.x) / scale;
+        const drawingY = (pointerY - panOffset.y) / scale;
+
+        setPanOffset({
+            x: pointerX - drawingX * nextScale,
+            y: pointerY - drawingY * nextScale,
+        });
+        onScaleChange(nextScale);
     };
 
     const switchPage = (pageNumber: number) => {
@@ -746,7 +889,10 @@ export default function DrawingPlotScreen({
         setPreviewPoint(null);
         setSelectedWireId('');
         setSelectedEraserId('');
+        setSelectedBoxId('');
         setSelectedPointIndex(null);
+        setPanDrag(null);
+        setPanOffset({ x: 0, y: 0 });
         onDrawingChange({
             ...drawing,
             width: nextPage.width,
@@ -800,7 +946,20 @@ export default function DrawingPlotScreen({
             updateStatus('選択した消し込みを削除しました。');
             return;
         }
+        if (selectedBoxId) {
+            updateConstruction({ boxes: (currentPageConstruction.boxes ?? []).filter((box) => box.id !== selectedBoxId) });
+            setSelectedBoxId('');
+            updateStatus('選択した図形を削除しました。');
+            return;
+        }
         setSelectedPointIndex(null);
+    };
+
+    const handleSelectedBoxUpdate = (updates: Partial<ConstructionBox>) => {
+        if (!selectedBoxId) return;
+        updateConstruction({
+            boxes: (currentPageConstruction.boxes ?? []).map((box) => (box.id === selectedBoxId ? { ...box, ...updates } : box)),
+        });
     };
 
     const addBendPoint = () => {
@@ -868,11 +1027,13 @@ export default function DrawingPlotScreen({
         const rows = [
             ['全ページ集計', '長さ(m)'],
             ...lengthSummary.map((item) => [item.name, item.meters.toFixed(1)]),
+            ...boxSummary.map(([name, count]) => [name, `${count}個`]),
             [],
             ['ページ別集計', '項目', '数量'],
-            ...pageSummaries.flatMap(({ page, wires, devices }) => [
+            ...pageSummaries.flatMap(({ page, wires, devices, boxes }) => [
                 ...wires.map(([name, meters]) => [`${page.pageNumber}ページ目`, name, `${meters.toFixed(1)}m`]),
                 ...devices.map((device) => [`${page.pageNumber}ページ目`, device.name, `${device.count}個`]),
+                ...boxes.map(([name, count]) => [`${page.pageNumber}ページ目`, name, `${count}個`]),
             ]),
         ];
         const csv = rows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -952,6 +1113,25 @@ export default function DrawingPlotScreen({
                 context.fillText(wire.label, wire.labelX, wire.labelY - 3);
                 context.restore();
             }
+        });
+
+        (pageState.boxes ?? []).forEach((box) => {
+            const cx = box.x + box.width / 2;
+            const cy = box.y + box.height / 2;
+            context.save();
+            context.translate(cx, cy);
+            context.rotate((box.rotation * Math.PI) / 180);
+            context.fillStyle = box.fillColor;
+            context.strokeStyle = box.strokeColor;
+            context.lineWidth = box.strokeWidth;
+            context.fillRect(-box.width / 2, -box.height / 2, box.width, box.height);
+            context.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
+            context.fillStyle = box.strokeColor;
+            context.font = `700 ${box.fontSize}px sans-serif`;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(box.label, 0, 0);
+            context.restore();
         });
 
         placements
@@ -1053,6 +1233,12 @@ export default function DrawingPlotScreen({
                 event.preventDefault();
                 cancelDraft();
             }
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+                if (selectedWireId || selectedEraserId || selectedBoxId) {
+                    event.preventDefault();
+                    deleteSelectedWire();
+                }
+            }
             if (event.key === 'PageUp') {
                 event.preventDefault();
                 switchPageByDelta(-1);
@@ -1074,7 +1260,30 @@ export default function DrawingPlotScreen({
         return () => window.removeEventListener('keydown', handleKeyDown);
     });
 
-    const activeCursor = workspaceMode === 'construction' && constructionTool === 'select' ? 'default' : 'crosshair';
+    useEffect(() => {
+        if (!panDrag) return;
+
+        const handleGlobalMouseMove = (event: MouseEvent) => {
+            setPanOffset({
+                x: panDrag.originX + event.clientX - panDrag.startX,
+                y: panDrag.originY + event.clientY - panDrag.startY,
+            });
+        };
+
+        const handleGlobalMouseUp = () => {
+            setPanDrag(null);
+            updateStatus('パン移動を終了しました。');
+        };
+
+        window.addEventListener('mousemove', handleGlobalMouseMove);
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleGlobalMouseMove);
+            window.removeEventListener('mouseup', handleGlobalMouseUp);
+        };
+    }, [panDrag]);
+
+    const activeCursor = panDrag ? 'grabbing' : workspaceMode === 'construction' && constructionTool === 'select' ? 'grab' : 'crosshair';
 
     return (
         <div
@@ -1282,6 +1491,7 @@ export default function DrawingPlotScreen({
                                     { key: 'eraseLine', label: '消す', icon: <Eraser size={15} /> },
                                     { key: 'wire', label: '配線', icon: <PenLine size={15} /> },
                                     { key: 'orthogonalWire', label: '直角配線', icon: <PenLine size={15} /> },
+                                    { key: 'box', label: 'ジョイントボックス', icon: <Check size={15} /> },
                                 ].map((tool) => (
                                     <button
                                         key={tool.key}
@@ -1293,6 +1503,10 @@ export default function DrawingPlotScreen({
                                                 setSelectedWireId('');
                                                 setSelectedEraserId('');
                                                 updateStatus(tool.key === 'orthogonalWire' ? '直角配線を開始できます。クリックで始点を置いてください。' : '配線を開始できます。クリックで始点を置いてください。');
+                                            } else if (tool.key === 'box') {
+                                                setSelectedWireId('');
+                                                setSelectedEraserId('');
+                                                updateStatus('図面上をクリックすると100×100のジョイントボックスを配置します。');
                                             }
                                         }}
                                         style={{
@@ -1322,7 +1536,7 @@ export default function DrawingPlotScreen({
                                         </option>
                                     ))}
                                 </select>
-                                <button className="btn btn-secondary" onClick={deleteSelectedWire} disabled={!selectedWireId && !selectedEraserId} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
+                                <button className="btn btn-secondary" onClick={deleteSelectedWire} disabled={!selectedWireId && !selectedEraserId && !selectedBoxId} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
                                     <Trash2 size={15} /> 削除
                                 </button>
                                 <button className="btn btn-secondary" onClick={handleUndo} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
@@ -1339,7 +1553,20 @@ export default function DrawingPlotScreen({
                                 </button>
                             </div>
                         )}
-                        <div style={{ flex: 1, minHeight: 0, height: '100%', overflow: 'auto', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', background: '#fff' }}>
+                        <div
+                            onWheel={handleDrawingWheel}
+                            style={{
+                                flex: 1,
+                                minHeight: 0,
+                                height: '100%',
+                                overflow: 'hidden',
+                                borderRadius: 'var(--radius-lg)',
+                                border: panDrag ? '2px solid var(--primary)' : '1px solid var(--border-color)',
+                                background: '#fff',
+                                position: 'relative',
+                                cursor: panDrag ? 'grabbing' : 'default',
+                            }}
+                        >
                             {!activeDrawing.src ? (
                                 <div style={{ height: '100%', minHeight: '520px', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
                                     図面画像またはPDFを読み込むと、ここに表示されます。
@@ -1352,7 +1579,7 @@ export default function DrawingPlotScreen({
                                         handleConstructionClick(event);
                                     }}
                                     onDoubleClick={(event) => {
-                                        if (workspaceMode === 'construction' && constructionTool === 'wire') {
+                                        if (workspaceMode === 'construction' && (constructionTool === 'wire' || constructionTool === 'orthogonalWire')) {
                                             event.preventDefault();
                                             finishWire();
                                         }
@@ -1360,7 +1587,12 @@ export default function DrawingPlotScreen({
                                     onMouseDown={handleConstructionMouseDown}
                                     onMouseMove={handleMouseMove}
                                     onMouseUp={handleMouseUp}
-                                    onMouseLeave={handleMouseUp}
+                                    onMouseLeave={() => {
+                                        if (!panDrag) handleMouseUp();
+                                    }}
+                                    onAuxClick={(event) => {
+                                        if (event.button === 1) event.preventDefault();
+                                    }}
                                     onContextMenu={(event) => {
                                         const target = (event.target as HTMLElement).closest('[data-placement-id]');
                                         if (!target) return;
@@ -1371,11 +1603,32 @@ export default function DrawingPlotScreen({
                                         position: 'relative',
                                         width: activeDrawing.width,
                                         height: activeDrawing.height,
-                                        transform: `scale(${scale})`,
+                                        transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`,
                                         transformOrigin: 'top left',
                                         cursor: activeCursor,
+                                        userSelect: panDrag ? 'none' : undefined,
                                     }}
                                 >
+                                    {panDrag && (
+                                        <div
+                                            data-export-ignore
+                                            style={{
+                                                position: 'absolute',
+                                                left: 12,
+                                                top: 12,
+                                                zIndex: 20,
+                                                padding: '0.45rem 0.7rem',
+                                                borderRadius: 'var(--radius-md)',
+                                                background: 'rgba(37,99,235,0.9)',
+                                                color: 'white',
+                                                fontWeight: 700,
+                                                fontSize: '0.85rem',
+                                                pointerEvents: 'none',
+                                            }}
+                                        >
+                                            パン移動中
+                                        </div>
+                                    )}
                                     <img src={activeDrawing.src} alt="図面" style={{ width: activeDrawing.width, height: activeDrawing.height, display: 'block', userSelect: 'none' }} />
                                     <svg
                                         width={activeDrawing.width}
@@ -1400,6 +1653,7 @@ export default function DrawingPlotScreen({
                                                         event.stopPropagation();
                                                         setSelectedEraserId(shape.id);
                                                         setSelectedWireId('');
+                                                        setSelectedBoxId('');
                                                     }}
                                                     style={{ cursor: constructionTool === 'select' ? 'pointer' : 'default' }}
                                                 />
@@ -1419,6 +1673,7 @@ export default function DrawingPlotScreen({
                                                             event.stopPropagation();
                                                             setSelectedEraserId(shape.id);
                                                             setSelectedWireId('');
+                                                            setSelectedBoxId('');
                                                         }}
                                                         style={{ cursor: constructionTool === 'select' ? 'pointer' : 'default' }}
                                                     />
@@ -1440,6 +1695,74 @@ export default function DrawingPlotScreen({
                                                 <line x1={dragState.start.x} y1={dragState.start.y} x2={dragState.current.x} y2={dragState.current.y} stroke="#ffffff" strokeWidth={DEFAULT_ERASER_WIDTH} strokeLinecap="round" />
                                             )
                                         )}
+                                        {(currentPageConstruction.boxes ?? []).map((box) => {
+                                            const selected = box.id === selectedBoxId;
+                                            const cx = box.x + box.width / 2;
+                                            const cy = box.y + box.height / 2;
+                                            const handles: Array<{ key: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }> = [
+                                                { key: 'nw', x: box.x, y: box.y },
+                                                { key: 'ne', x: box.x + box.width, y: box.y },
+                                                { key: 'sw', x: box.x, y: box.y + box.height },
+                                                { key: 'se', x: box.x + box.width, y: box.y + box.height },
+                                            ];
+                                            return (
+                                                <g key={box.id} transform={`rotate(${box.rotation} ${cx} ${cy})`}>
+                                                    <rect
+                                                        x={box.x}
+                                                        y={box.y}
+                                                        width={box.width}
+                                                        height={box.height}
+                                                        fill={box.fillColor}
+                                                        stroke={selected ? '#f97316' : box.strokeColor}
+                                                        strokeWidth={selected ? Math.max(box.strokeWidth, 3) : box.strokeWidth}
+                                                        onMouseDown={(event) => {
+                                                            if (workspaceMode !== 'construction' || constructionTool !== 'select') return;
+                                                            event.stopPropagation();
+                                                            const start = getCanvasPoint(event.nativeEvent);
+                                                            if (!start) return;
+                                                            setSelectedBoxId(box.id);
+                                                            setSelectedWireId('');
+                                                            setSelectedEraserId('');
+                                                            setDragState({ kind: 'box', boxId: box.id, start, originalBox: box });
+                                                        }}
+                                                        style={{ cursor: constructionTool === 'select' ? 'move' : 'default' }}
+                                                    />
+                                                    <text
+                                                        x={cx}
+                                                        y={cy}
+                                                        fill={box.strokeColor}
+                                                        fontSize={box.fontSize}
+                                                        fontWeight={700}
+                                                        textAnchor="middle"
+                                                        dominantBaseline="middle"
+                                                        style={{ pointerEvents: 'none', userSelect: 'none' }}
+                                                    >
+                                                        {box.label}
+                                                    </text>
+                                                    {selected &&
+                                                        handles.map((handle) => (
+                                                            <rect
+                                                                key={handle.key}
+                                                                x={handle.x - 6}
+                                                                y={handle.y - 6}
+                                                                width={12}
+                                                                height={12}
+                                                                fill="#ffffff"
+                                                                stroke="#0f172a"
+                                                                strokeWidth={2}
+                                                                onMouseDown={(event) => {
+                                                                    if (constructionTool !== 'select') return;
+                                                                    event.stopPropagation();
+                                                                    const start = getCanvasPoint(event.nativeEvent);
+                                                                    if (!start) return;
+                                                                    setDragState({ kind: 'boxResize', boxId: box.id, handle: handle.key, start, originalBox: box, keepRatio: event.shiftKey });
+                                                                }}
+                                                                style={{ cursor: `${handle.key}-resize` }}
+                                                            />
+                                                        ))}
+                                                </g>
+                                            );
+                                        })}
                                         {currentPageConstruction.wires.map((wire) => {
                                             const lineType = normalizedConstruction.lineTypes.find((type) => type.id === wire.lineTypeId) ?? normalizedConstruction.lineTypes[0];
                                             const selected = wire.id === selectedWireId;
@@ -1469,6 +1792,7 @@ export default function DrawingPlotScreen({
                                                             event.stopPropagation();
                                                             setSelectedWireId(wire.id);
                                                             setSelectedEraserId('');
+                                                            setSelectedBoxId('');
                                                             setSelectedPointIndex(null);
                                                             const start = getCanvasPoint(event.nativeEvent);
                                                             if (start) {
@@ -1479,6 +1803,7 @@ export default function DrawingPlotScreen({
                                                             if (constructionTool !== 'select') return;
                                                             event.stopPropagation();
                                                             setSelectedWireId(wire.id);
+                                                            setSelectedBoxId('');
                                                             setSelectedEraserId('');
                                                         }}
                                                         style={{ cursor: constructionTool === 'select' ? 'move' : 'default', pointerEvents: workspaceMode === 'construction' ? 'stroke' : 'none' }}
@@ -1625,6 +1950,48 @@ export default function DrawingPlotScreen({
                                 <input value={selectedWire.label} onChange={(event) => handleSelectedWireUpdate({ label: event.target.value })} style={{ width: '100%' }} />
                             </label>
                         )}
+                        {selectedBox && (
+                            <>
+                                <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                    表示名
+                                    <input value={selectedBox.label} onChange={(event) => handleSelectedBoxUpdate({ label: event.target.value })} list="construction-box-labels" style={{ width: '100%' }} />
+                                </label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        幅
+                                        <input type="number" value={selectedBox.width} onChange={(event) => handleSelectedBoxUpdate({ width: Math.max(20, Number(event.target.value) || 20) })} style={{ width: '100%' }} />
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        高さ
+                                        <input type="number" value={selectedBox.height} onChange={(event) => handleSelectedBoxUpdate({ height: Math.max(20, Number(event.target.value) || 20) })} style={{ width: '100%' }} />
+                                    </label>
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        線色
+                                        <input type="color" value={selectedBox.strokeColor} onChange={(event) => handleSelectedBoxUpdate({ strokeColor: event.target.value })} style={{ width: '100%', height: '38px' }} />
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        塗り
+                                        <input type="color" value={selectedBox.fillColor} onChange={(event) => handleSelectedBoxUpdate({ fillColor: event.target.value })} style={{ width: '100%', height: '38px' }} />
+                                    </label>
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        線太さ
+                                        <input type="number" value={selectedBox.strokeWidth} onChange={(event) => handleSelectedBoxUpdate({ strokeWidth: Math.max(1, Number(event.target.value) || 1) })} style={{ width: '100%' }} />
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        文字
+                                        <input type="number" value={selectedBox.fontSize} onChange={(event) => handleSelectedBoxUpdate({ fontSize: Math.max(8, Number(event.target.value) || 8) })} style={{ width: '100%' }} />
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                        回転
+                                        <input type="number" value={selectedBox.rotation} onChange={(event) => handleSelectedBoxUpdate({ rotation: Number(event.target.value) || 0 })} style={{ width: '100%' }} />
+                                    </label>
+                                </div>
+                            </>
+                        )}
                         <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
                             <button className="btn btn-secondary" onClick={() => setShowLabels(!showLabels)} style={{ padding: '0.45rem 0.65rem', fontSize: '0.82rem' }}>
                                 {showLabels ? <Eye size={15} /> : <EyeOff size={15} />} ラベル
@@ -1650,11 +2017,17 @@ export default function DrawingPlotScreen({
                                 </svg>
                             </div>
                         ))}
-                        {!lengthSummary.length && <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>まだ配線はありません。</p>}
+                        {boxSummary.map(([name, count]) => (
+                            <div key={name} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.85rem' }}>
+                                <span style={{ fontWeight: 700 }}>{name}</span>
+                                <strong>{count}個</strong>
+                            </div>
+                        ))}
+                        {!lengthSummary.length && !boxSummary.length && <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>まだ配線・図形はありません。</p>}
                     </div>
                     <h2 style={{ fontSize: '1rem', margin: '1rem 0 0.75rem' }}>ページ別集計</h2>
                     <div style={{ display: 'grid', gap: '0.6rem' }}>
-                        {pageSummaries.map(({ page, wires, devices }) => (
+	                        {pageSummaries.map(({ page, wires, devices, boxes }) => (
                             <div key={page.pageNumber} style={{ border: page.pageNumber === currentPageNumber ? '1px solid var(--primary)' : '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '0.65rem' }}>
                                 <strong style={{ display: 'block', marginBottom: '0.35rem' }}>{page.pageNumber}ページ目</strong>
                                 {wires.map(([name, meters]) => (
@@ -1669,7 +2042,13 @@ export default function DrawingPlotScreen({
                                         <strong>{device.count}個</strong>
                                     </div>
                                 ))}
-                                {!wires.length && !devices.length && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>未入力</span>}
+                                {boxes.map(([name, count]) => (
+                                    <div key={name} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', fontSize: '0.82rem' }}>
+                                        <span>{name}</span>
+                                        <strong>{count}個</strong>
+                                    </div>
+                                ))}
+                                {!wires.length && !devices.length && !boxes.length && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>未入力</span>}
                             </div>
                         ))}
                     </div>
@@ -1764,6 +2143,11 @@ export default function DrawingPlotScreen({
                     </div>
                 </>
             )}
+            <datalist id="construction-box-labels">
+                {['JB', 'PB', '端子箱', '盤', 'P-1', 'JB-1', 'JB-2'].map((label) => (
+                    <option key={label} value={label} />
+                ))}
+            </datalist>
         </div>
     );
 }

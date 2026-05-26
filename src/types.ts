@@ -100,9 +100,24 @@ export interface EraserShape {
     width: number;
 }
 
+export interface ConstructionBox {
+    id: string;
+    label: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    strokeColor: string;
+    strokeWidth: number;
+    fillColor: string;
+    fontSize: number;
+    rotation: number;
+}
+
 export interface ConstructionPageState {
     wires: WiringLine[];
     erasers: EraserShape[];
+    boxes?: ConstructionBox[];
     scaleMetersPerPixel: number;
 }
 
