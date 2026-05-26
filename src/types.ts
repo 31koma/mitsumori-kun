@@ -102,16 +102,19 @@ export interface EraserShape {
 
 export interface ConstructionBox {
     id: string;
+    type?: 'JB' | 'outlet' | 'switch' | 'dl';
     label: string;
+    size: string;
+    note?: string;
     x: number;
     y: number;
     width: number;
     height: number;
-    strokeColor: string;
-    strokeWidth: number;
-    fillColor: string;
-    fontSize: number;
-    rotation: number;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillColor?: string;
+    fontSize?: number;
+    rotation?: number;
 }
 
 export interface ConstructionPageState {

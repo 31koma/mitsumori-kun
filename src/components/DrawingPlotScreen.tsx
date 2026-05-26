@@ -202,6 +202,15 @@ const snapPoint = (previous: WiringPoint | undefined, point: WiringPoint, enable
     return dx >= dy ? { x: point.x, y: previous.y } : { x: previous.x, y: point.y };
 };
 
+const getBoxSummaryKey = (label: string, size?: string) => {
+    if (!size) return label;
+    const firstDim = size.split('×')[0].trim();
+    if (/^\d+/.test(firstDim)) {
+        return `${label}${firstDim}`;
+    }
+    return `${label} (${size})`;
+};
+
 export default function DrawingPlotScreen({
     onBack,
     onApplyToEstimate,
@@ -331,7 +340,10 @@ export default function DrawingPlotScreen({
             count: placements.filter((placement) => (placement.pageNumber ?? 1) === page.pageNumber && placement.type === symbol.key).length,
         })).filter((item) => item.count > 0);
         const boxes = new Map<string, number>();
-        (pageState.boxes ?? []).forEach((box) => boxes.set(box.label, (boxes.get(box.label) ?? 0) + 1));
+        (pageState.boxes ?? []).forEach((box) => {
+            const key = getBoxSummaryKey(box.label, box.size);
+            boxes.set(key, (boxes.get(key) ?? 0) + 1);
+        });
         return { page, wires: Array.from(wires.entries()), devices, boxes: Array.from(boxes.entries()) };
     });
 
@@ -339,7 +351,10 @@ export default function DrawingPlotScreen({
         const summary = new Map<string, number>();
         drawingPages.forEach((page) => {
             const pageState = getPageConstruction(page.pageNumber);
-            (pageState.boxes ?? []).forEach((box) => summary.set(box.label, (summary.get(box.label) ?? 0) + 1));
+            (pageState.boxes ?? []).forEach((box) => {
+                const key = getBoxSummaryKey(box.label, box.size);
+                summary.set(key, (summary.get(key) ?? 0) + 1);
+            });
         });
         return Array.from(summary.entries()).sort((a, b) => a[0].localeCompare(b[0]));
     })();
@@ -569,15 +584,18 @@ export default function DrawingPlotScreen({
             if (!point) return;
             const newBox: ConstructionBox = {
                 id: crypto.randomUUID(),
+                type: 'JB',
                 label: 'JB',
-                x: Math.round(point.x - 50),
-                y: Math.round(point.y - 50),
-                width: 100,
-                height: 100,
+                size: '100×100×100',
+                note: '',
+                x: Math.round(point.x - 30),
+                y: Math.round(point.y - 30),
+                width: 60,
+                height: 60,
                 strokeColor: '#111827',
-                strokeWidth: 3,
+                strokeWidth: 2,
                 fillColor: '#ffffff',
-                fontSize: 24,
+                fontSize: 16,
                 rotation: 0,
             };
             updateConstruction({ boxes: [...(currentPageConstruction.boxes ?? []), newBox] });
@@ -1120,14 +1138,14 @@ export default function DrawingPlotScreen({
             const cy = box.y + box.height / 2;
             context.save();
             context.translate(cx, cy);
-            context.rotate((box.rotation * Math.PI) / 180);
-            context.fillStyle = box.fillColor;
-            context.strokeStyle = box.strokeColor;
-            context.lineWidth = box.strokeWidth;
+            context.rotate(((box.rotation ?? 0) * Math.PI) / 180);
+            context.fillStyle = box.fillColor ?? '#ffffff';
+            context.strokeStyle = box.strokeColor ?? '#111827';
+            context.lineWidth = box.strokeWidth ?? 2;
             context.fillRect(-box.width / 2, -box.height / 2, box.width, box.height);
             context.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
-            context.fillStyle = box.strokeColor;
-            context.font = `700 ${box.fontSize}px sans-serif`;
+            context.fillStyle = box.strokeColor ?? '#111827';
+            context.font = `700 ${box.fontSize ?? 16}px sans-serif`;
             context.textAlign = 'center';
             context.textBaseline = 'middle';
             context.fillText(box.label, 0, 0);
@@ -1699,22 +1717,16 @@ export default function DrawingPlotScreen({
                                             const selected = box.id === selectedBoxId;
                                             const cx = box.x + box.width / 2;
                                             const cy = box.y + box.height / 2;
-                                            const handles: Array<{ key: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }> = [
-                                                { key: 'nw', x: box.x, y: box.y },
-                                                { key: 'ne', x: box.x + box.width, y: box.y },
-                                                { key: 'sw', x: box.x, y: box.y + box.height },
-                                                { key: 'se', x: box.x + box.width, y: box.y + box.height },
-                                            ];
                                             return (
-                                                <g key={box.id} transform={`rotate(${box.rotation} ${cx} ${cy})`}>
+                                                <g key={box.id} transform={`rotate(${box.rotation ?? 0} ${cx} ${cy})`}>
                                                     <rect
                                                         x={box.x}
                                                         y={box.y}
                                                         width={box.width}
                                                         height={box.height}
-                                                        fill={box.fillColor}
-                                                        stroke={selected ? '#f97316' : box.strokeColor}
-                                                        strokeWidth={selected ? Math.max(box.strokeWidth, 3) : box.strokeWidth}
+                                                        fill={box.fillColor ?? '#ffffff'}
+                                                        stroke={selected ? '#f97316' : (box.strokeColor ?? '#111827')}
+                                                        strokeWidth={selected ? Math.max(box.strokeWidth ?? 2, 3) : (box.strokeWidth ?? 2)}
                                                         onMouseDown={(event) => {
                                                             if (workspaceMode !== 'construction' || constructionTool !== 'select') return;
                                                             event.stopPropagation();
@@ -1730,8 +1742,8 @@ export default function DrawingPlotScreen({
                                                     <text
                                                         x={cx}
                                                         y={cy}
-                                                        fill={box.strokeColor}
-                                                        fontSize={box.fontSize}
+                                                        fill={box.strokeColor ?? '#111827'}
+                                                        fontSize={box.fontSize ?? 16}
                                                         fontWeight={700}
                                                         textAnchor="middle"
                                                         dominantBaseline="middle"
@@ -1739,27 +1751,6 @@ export default function DrawingPlotScreen({
                                                     >
                                                         {box.label}
                                                     </text>
-                                                    {selected &&
-                                                        handles.map((handle) => (
-                                                            <rect
-                                                                key={handle.key}
-                                                                x={handle.x - 6}
-                                                                y={handle.y - 6}
-                                                                width={12}
-                                                                height={12}
-                                                                fill="#ffffff"
-                                                                stroke="#0f172a"
-                                                                strokeWidth={2}
-                                                                onMouseDown={(event) => {
-                                                                    if (constructionTool !== 'select') return;
-                                                                    event.stopPropagation();
-                                                                    const start = getCanvasPoint(event.nativeEvent);
-                                                                    if (!start) return;
-                                                                    setDragState({ kind: 'boxResize', boxId: box.id, handle: handle.key, start, originalBox: box, keepRatio: event.shiftKey });
-                                                                }}
-                                                                style={{ cursor: `${handle.key}-resize` }}
-                                                            />
-                                                        ))}
                                                 </g>
                                             );
                                         })}
@@ -1953,43 +1944,50 @@ export default function DrawingPlotScreen({
                         {selectedBox && (
                             <>
                                 <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                    表示名
+                                    名称
                                     <input value={selectedBox.label} onChange={(event) => handleSelectedBoxUpdate({ label: event.target.value })} list="construction-box-labels" style={{ width: '100%' }} />
                                 </label>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                                <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                    サイズ
+                                    <select
+                                        value={['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') ? selectedBox.size : 'その他'}
+                                        onChange={(event) => {
+                                            const val = event.target.value;
+                                            if (val === 'その他') {
+                                                handleSelectedBoxUpdate({ size: 'その他' });
+                                            } else {
+                                                handleSelectedBoxUpdate({ size: val });
+                                            }
+                                        }}
+                                        style={{ width: '100%', padding: '0.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                    >
+                                        <option value="100×100×100">100×100×100</option>
+                                        <option value="150×150×100">150×150×100</option>
+                                        <option value="200×200×150">200×200×150</option>
+                                        <option value="300×300×200">300×300×200</option>
+                                        <option value="その他">その他（自由入力）</option>
+                                    </select>
+                                </label>
+                                {(!['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') || selectedBox.size === 'その他') && (
                                     <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        幅
-                                        <input type="number" value={selectedBox.width} onChange={(event) => handleSelectedBoxUpdate({ width: Math.max(20, Number(event.target.value) || 20) })} style={{ width: '100%' }} />
+                                        サイズ自由入力
+                                        <input
+                                            value={selectedBox.size === 'その他' ? '' : selectedBox.size || ''}
+                                            placeholder="サイズを入力してください"
+                                            onChange={(event) => handleSelectedBoxUpdate({ size: event.target.value })}
+                                            style={{ width: '100%' }}
+                                        />
                                     </label>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        高さ
-                                        <input type="number" value={selectedBox.height} onChange={(event) => handleSelectedBoxUpdate({ height: Math.max(20, Number(event.target.value) || 20) })} style={{ width: '100%' }} />
-                                    </label>
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        線色
-                                        <input type="color" value={selectedBox.strokeColor} onChange={(event) => handleSelectedBoxUpdate({ strokeColor: event.target.value })} style={{ width: '100%', height: '38px' }} />
-                                    </label>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        塗り
-                                        <input type="color" value={selectedBox.fillColor} onChange={(event) => handleSelectedBoxUpdate({ fillColor: event.target.value })} style={{ width: '100%', height: '38px' }} />
-                                    </label>
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        線太さ
-                                        <input type="number" value={selectedBox.strokeWidth} onChange={(event) => handleSelectedBoxUpdate({ strokeWidth: Math.max(1, Number(event.target.value) || 1) })} style={{ width: '100%' }} />
-                                    </label>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        文字
-                                        <input type="number" value={selectedBox.fontSize} onChange={(event) => handleSelectedBoxUpdate({ fontSize: Math.max(8, Number(event.target.value) || 8) })} style={{ width: '100%' }} />
-                                    </label>
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        回転
-                                        <input type="number" value={selectedBox.rotation} onChange={(event) => handleSelectedBoxUpdate({ rotation: Number(event.target.value) || 0 })} style={{ width: '100%' }} />
-                                    </label>
-                                </div>
+                                )}
+                                <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                    備考
+                                    <input
+                                        value={selectedBox.note || ''}
+                                        placeholder="備考を入力してください"
+                                        onChange={(event) => handleSelectedBoxUpdate({ note: event.target.value })}
+                                        style={{ width: '100%' }}
+                                    />
+                                </label>
                             </>
                         )}
                         <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
