@@ -41,6 +41,16 @@ export interface PlotPlacement {
     xRatio: number;
     yRatio: number;
     positionLabel: string;
+    pageNumber?: number;
+}
+
+export interface PlotDrawingPage {
+    pageNumber: number;
+    name: string;
+    width: number;
+    height: number;
+    src: string;
+    thumbnailSrc: string;
 }
 
 export interface PlotDrawingState {
@@ -48,6 +58,60 @@ export interface PlotDrawingState {
     width: number;
     height: number;
     src: string;
+    fileType?: 'image' | 'pdf';
+    pages?: PlotDrawingPage[];
+    currentPageNumber?: number;
+}
+
+export interface WiringLineType {
+    id: string;
+    name: string;
+    label: string;
+    color: string;
+    width: number;
+    dash: string;
+}
+
+export interface WiringPoint {
+    x: number;
+    y: number;
+}
+
+export interface WiringLine {
+    id: string;
+    lineTypeId: string;
+    points: WiringPoint[];
+    label: string;
+    labelX: number;
+    labelY: number;
+    showLabel: boolean;
+    color?: string;
+    width?: number;
+    dash?: string;
+}
+
+export interface EraserShape {
+    id: string;
+    kind: 'line' | 'rect';
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    width: number;
+}
+
+export interface ConstructionPageState {
+    wires: WiringLine[];
+    erasers: EraserShape[];
+    scaleMetersPerPixel: number;
+}
+
+export interface ConstructionDrawingState {
+    lineTypes: WiringLineType[];
+    wires: WiringLine[];
+    erasers: EraserShape[];
+    scaleMetersPerPixel: number;
+    pages?: Record<string, ConstructionPageState>;
 }
 
 export const defaultInfo: EstimateInfo = {

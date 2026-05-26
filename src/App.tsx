@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate, type PlotPlacement, type Category, type PlotDrawingState } from './types';
+import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate, type PlotPlacement, type Category, type PlotDrawingState, type ConstructionDrawingState } from './types';
 import TopScreen from './components/TopScreen';
 import InputScreen from './components/InputScreen';
 import EstimateScreen from './components/EstimateScreen';
@@ -113,6 +113,22 @@ function App() {
     src: '',
   });
   const [plotPlacements, setPlotPlacements] = useState<PlotPlacement[]>([]);
+  const [constructionDrawing, setConstructionDrawing] = useState<ConstructionDrawingState>({
+    lineTypes: [
+      { id: 'vvf16-2c', name: 'VVF 1.6-2C', label: '1.6-2C', color: '#1d4ed8', width: 4, dash: '' },
+      { id: 'vvf16-3c', name: 'VVF 1.6-3C', label: '1.6-3C', color: '#0f766e', width: 4, dash: '12 8' },
+      { id: 'vvf20-2c', name: 'VVF 2.0-2C', label: '2.0-2C', color: '#b45309', width: 5, dash: '' },
+      { id: 'vvf20-3c', name: 'VVF 2.0-3C', label: '2.0-3C', color: '#dc2626', width: 5, dash: '14 7' },
+      { id: 'cv35-3c', name: 'CV 3.5sq-3C', label: '3.5sq-3C', color: '#7c3aed', width: 5, dash: '4 7' },
+      { id: 'cv55-3c', name: 'CV 5.5sq-3C', label: '5.5sq-3C', color: '#0369a1', width: 5, dash: '18 7 4 7' },
+      { id: 'cv8-3c', name: 'CV 8sq-3C', label: '8sq-3C', color: '#be123c', width: 6, dash: '' },
+      { id: 'cv14-3c', name: 'CV 14sq-3C', label: '14sq-3C', color: '#111827', width: 6, dash: '20 8' },
+    ],
+    wires: [],
+    erasers: [],
+    scaleMetersPerPixel: 0.01,
+    pages: {},
+  });
   const [plotScale, setPlotScale] = useState(1);
 
   // Save to local storage whenever items or info change
@@ -223,6 +239,37 @@ function App() {
     });
 
     alert(`図面プロットから ${aggregated.size} 種類の項目を反映しました。`);
+    setCurrentScreen('input');
+  };
+
+  const applyConstructionWires = (summary: Array<{ name: string; meters: number }>) => {
+    if (!summary.length) {
+      alert('反映できる配線数量がありませんでした。');
+      return;
+    }
+
+    summary.forEach((entry) => {
+      const existingItem = items.find(i => i.name.replace(/\s+/g, '') === entry.name.replace(/\s+/g, ''));
+      if (existingItem) {
+        updateItem(existingItem.id, {
+          quantity: String(entry.meters),
+          selected: true
+        });
+      } else {
+        addItem({
+          id: 'dyn_wire_' + Date.now() + Math.random(),
+          name: entry.name,
+          category: '電線',
+          quantity: String(entry.meters),
+          unit: 'm',
+          unitPrice: '',
+          selected: true,
+          itemType: 'free'
+        });
+      }
+    });
+
+    alert(`施工図配線から ${summary.length} 種類の線種を見積へ反映しました。`);
     setCurrentScreen('input');
   };
 
@@ -356,11 +403,15 @@ function App() {
         <DrawingPlotScreen
           onBack={() => setCurrentScreen('top')}
           onApplyToEstimate={applyPlotPlacements}
+          onApplyWiresToEstimate={applyConstructionWires}
+          onOpenEstimateInput={() => setCurrentScreen('input')}
           drawing={plotDrawing}
           placements={plotPlacements}
+          construction={constructionDrawing}
           scale={plotScale}
           onDrawingChange={setPlotDrawing}
           onPlacementsChange={setPlotPlacements}
+          onConstructionChange={setConstructionDrawing}
           onScaleChange={setPlotScale}
         />
       )}
