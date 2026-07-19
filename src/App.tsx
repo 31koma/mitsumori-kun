@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
-import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate, type PlotPlacement, type Category, type PlotDrawingState, type ConstructionDrawingState } from './types';
+import { type EstimateItem, defaultItems, type EstimateInfo, defaultInfo, type SavedEstimate, type PlotPlacement, type Category, type PlotDrawingState, type ConstructionDrawingState, type Customer } from './types';
+import CustomerScreen from './components/CustomerScreen';
 import TopScreen from './components/TopScreen';
 import InputScreen from './components/InputScreen';
 import EstimateScreen from './components/EstimateScreen';
 import SavedEstimatesScreen from './components/SavedEstimatesScreen';
 import ReferencePriceScreen from './components/ReferencePriceScreen';
 import DrawingPlotScreen from './components/DrawingPlotScreen';
+import { constructionDB } from './utils/db';
 
-export type ScreenType = 'top' | 'plot' | 'input' | 'estimate' | 'saved' | 'ref_edit';
+export type ScreenType = 'top' | 'plot' | 'input' | 'estimate' | 'saved' | 'ref_edit' | 'customers';
 
 function App() {
   const REQUIRED_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
@@ -87,6 +89,18 @@ function App() {
     return [];
   });
 
+  const [customers, setCustomers] = useState<Customer[]>(() => {
+    const saved = localStorage.getItem('mitsumori-kun-customers');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved customers', e);
+      }
+    }
+    return [];
+  });
+
   const [customRefs, setCustomRefs] = useState<Record<string, string>>(() => {
     const saved = localStorage.getItem('mitsumori-kun-custom-refs');
     if (saved) {
@@ -106,6 +120,8 @@ function App() {
   const [copperRateDate, setCopperRateDate] = useState<string>(() => {
     return localStorage.getItem('mitsumori-kun-copper-date') || '2026/03/02';
   });
+  const [activeProjectId, setActiveProjectId] = useState<string>('');
+  const [activeProjectName, setActiveProjectName] = useState<string>('');
   const [plotDrawing, setPlotDrawing] = useState<PlotDrawingState>({
     name: '',
     width: 0,
@@ -131,6 +147,25 @@ function App() {
   });
   const [plotScale, setPlotScale] = useState(1);
 
+  // 起動マウント時の自動復元
+  useEffect(() => {
+    const lastId = localStorage.getItem('mitsumori-kun-last-project-id');
+    if (lastId) {
+      constructionDB.getProject(lastId).then((project) => {
+        if (project) {
+          setActiveProjectId(project.id);
+          setActiveProjectName(project.name);
+          setPlotDrawing(project.drawing);
+          setPlotPlacements(project.placements);
+          setConstructionDrawing(project.construction);
+          setPlotScale(project.scale);
+        }
+      }).catch((err) => {
+        console.error('Failed to auto-restore construction project', err);
+      });
+    }
+  }, []);
+
   // Save to local storage whenever items or info change
   useEffect(() => {
     localStorage.setItem('mitsumori-kun-items', JSON.stringify(items));
@@ -147,6 +182,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('mitsumori-kun-custom-refs', JSON.stringify(customRefs));
   }, [customRefs]);
+
+  useEffect(() => {
+    localStorage.setItem('mitsumori-kun-customers', JSON.stringify(customers));
+  }, [customers]);
 
   const handleUpdateCopperRate = (rate: string) => {
     setCopperRate(rate);
@@ -242,9 +281,9 @@ function App() {
     setCurrentScreen('input');
   };
 
-  const applyConstructionWires = (summary: Array<{ name: string; meters: number }>) => {
+  const applyConstructionWires = (summary: Array<{ name: string; quantity: number; unit: 'm' | '個'; category: Category }>) => {
     if (!summary.length) {
-      alert('反映できる配線数量がありませんでした。');
+      alert('反映できる施工図数量がありませんでした。');
       return;
     }
 
@@ -252,16 +291,16 @@ function App() {
       const existingItem = items.find(i => i.name.replace(/\s+/g, '') === entry.name.replace(/\s+/g, ''));
       if (existingItem) {
         updateItem(existingItem.id, {
-          quantity: String(entry.meters),
+          quantity: String(entry.quantity),
           selected: true
         });
       } else {
         addItem({
-          id: 'dyn_wire_' + Date.now() + Math.random(),
+          id: 'dyn_construction_' + Date.now() + Math.random(),
           name: entry.name,
-          category: '電線',
-          quantity: String(entry.meters),
-          unit: 'm',
+          category: entry.category,
+          quantity: String(entry.quantity),
+          unit: entry.unit,
           unitPrice: '',
           selected: true,
           itemType: 'free'
@@ -269,7 +308,7 @@ function App() {
       }
     });
 
-    alert(`施工図配線から ${summary.length} 種類の線種を見積へ反映しました。`);
+    alert(`施工図から ${summary.length} 種類の数量を見積へ反映しました。`);
     setCurrentScreen('input');
   };
 
@@ -337,9 +376,55 @@ function App() {
     });
   };
 
+  // 顧客マスタの登録・更新（同一IDがあれば置換、なければ追加）
+  const handleSaveCustomer = (customer: Customer) => {
+    setCustomers(prev => {
+      const exists = prev.some(c => c.id === customer.id);
+      return exists ? prev.map(c => c.id === customer.id ? customer : c) : [customer, ...prev];
+    });
+  };
+
+  const handleDeleteCustomer = (id: string) => {
+    setCustomers(prev => prev.filter(c => c.id !== id));
+  };
+
+  // 顧客画面から見積作成を開始
+  const handleCreateEstimateForCustomer = (customer: Customer) => {
+    setInfo(prev => ({
+      ...prev,
+      customerName: customer.name,
+      customerId: customer.id,
+      address: customer.address || prev.address,
+    }));
+    setCurrentScreen('input');
+  };
+
+  // 見積保存時、顧客名が未登録なら顧客マスタへ自動登録する
+  const upsertCustomerFromInfo = (estimateInfo: EstimateInfo): string | undefined => {
+    const name = estimateInfo.customerName.trim();
+    if (!name) return estimateInfo.customerId;
+
+    const existing = customers.find(c => c.id === estimateInfo.customerId) || customers.find(c => c.name === name);
+    const now = new Date().toLocaleString('ja-JP');
+
+    if (existing) {
+      return existing.id;
+    }
+    const newCustomer: Customer = {
+      id: `cust_${Date.now()}`,
+      name,
+      address: estimateInfo.address || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    setCustomers(prev => [newCustomer, ...prev]);
+    return newCustomer.id;
+  };
+
   const handleSaveEstimate = () => {
     const nextNumber = generateNextEstimateNumber();
-    const updatedInfo = { ...info, estimateNumber: nextNumber };
+    const customerId = upsertCustomerFromInfo(info);
+    const updatedInfo = { ...info, estimateNumber: nextNumber, customerId };
     setInfo(updatedInfo); // Also update working copy
 
     const newSaved: SavedEstimate = {
@@ -367,7 +452,7 @@ function App() {
     return (
       <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem' }}>
         <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '2rem', textAlign: 'center', margin: '0 auto' }}>
-          <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem', color: 'var(--primary)', border: 'none', padding: 0 }}>電気工事見積もりくん</h1>
+          <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem', color: 'var(--primary)', border: 'none', padding: 0 }}>電工見積もりくん</h1>
           <p style={{ marginBottom: '1.5rem', color: 'var(--text-main)', fontSize: '0.875rem' }}>利用するにはパスワードを入力してください</p>
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <input
@@ -395,7 +480,9 @@ function App() {
           onStart={() => setCurrentScreen('input')}
           onOpenPlot={() => setCurrentScreen('plot')}
           onViewSaved={() => setCurrentScreen('saved')}
+          onOpenCustomers={() => setCurrentScreen('customers')}
           hasSavedCount={savedEstimates.length}
+          customerCount={customers.length}
         />
       )}
 
@@ -413,6 +500,21 @@ function App() {
           onPlacementsChange={setPlotPlacements}
           onConstructionChange={setConstructionDrawing}
           onScaleChange={setPlotScale}
+          activeProjectId={activeProjectId}
+          activeProjectName={activeProjectName}
+          onProjectChange={(projectId, projectName, drawing, placements, construction, scale) => {
+            setActiveProjectId(projectId);
+            setActiveProjectName(projectName);
+            if (drawing) setPlotDrawing(drawing);
+            if (placements) setPlotPlacements(placements);
+            if (construction) setConstructionDrawing(construction);
+            if (scale !== undefined) setPlotScale(scale);
+            if (projectId) {
+              localStorage.setItem('mitsumori-kun-last-project-id', projectId);
+            } else {
+              localStorage.removeItem('mitsumori-kun-last-project-id');
+            }
+          }}
         />
       )}
 
@@ -433,6 +535,7 @@ function App() {
           onReset={clearData}
           onEditRefPrice={() => setCurrentScreen('ref_edit')}
           onOpenPlot={() => setCurrentScreen('plot')}
+          customers={customers}
         />
       )}
 
@@ -451,6 +554,17 @@ function App() {
           onBack={() => setCurrentScreen('top')}
           onLoad={handleLoadSavedEstimate}
           onDelete={handleDeleteSavedEstimate}
+        />
+      )}
+
+      {currentScreen === 'customers' && (
+        <CustomerScreen
+          customers={customers}
+          savedEstimates={savedEstimates}
+          onBack={() => setCurrentScreen('top')}
+          onSaveCustomer={handleSaveCustomer}
+          onDeleteCustomer={handleDeleteCustomer}
+          onCreateEstimate={handleCreateEstimateForCustomer}
         />
       )}
 

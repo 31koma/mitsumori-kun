@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { defaultItems, type EstimateItem, type Category, type EstimateInfo } from '../types';
-import { ChevronRight, ChevronDown, Trash2, Sparkles, MapPinned } from 'lucide-react';
+import { defaultItems, type EstimateItem, type Category, type EstimateInfo, type Customer } from '../types';
+import { ChevronRight, ChevronDown, Trash2, Sparkles, MapPinned, Calculator } from 'lucide-react';
+import CostPanel from './CostPanel';
+import { calcLabor } from '../utils/laborCalc';
 
 interface InputScreenProps {
     items: EstimateItem[];
@@ -18,6 +20,7 @@ interface InputScreenProps {
     onReset: () => void;
     onEditRefPrice?: () => void;
     onOpenPlot?: () => void;
+    customers?: Customer[];
 }
 
 const CATEGORIES: Category[] = ['電線', '配管', '配線器具', '機器', '人工', '経費'];
@@ -25,7 +28,7 @@ const DEVICE_SUGGESTIONS = defaultItems
     .filter((item) => item.category === '配線器具' && !item.itemType)
     .map((item) => item.name);
 
-export default function InputScreen({ items, info, customRefs, copperRate, copperRateDate, updateItem, updateInfo, updateCustomRef, onUpdateCopperRate, addItem, removeItem, onNext, onReset, onEditRefPrice, onOpenPlot }: InputScreenProps) {
+export default function InputScreen({ items, info, customRefs, copperRate, copperRateDate, updateItem, updateInfo, updateCustomRef, onUpdateCopperRate, addItem, removeItem, onNext, onReset, onEditRefPrice, onOpenPlot, customers = [] }: InputScreenProps) {
     const [openCategories, setOpenCategories] = useState<Set<Category>>(new Set());
     const [aiText, setAiText] = useState('');
     const [isAIOpen, setIsAIOpen] = useState(false);
@@ -273,6 +276,38 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
 
     const CABLE_NAMES = { cv: 'CV', cvt: 'CVT', slat: 'ニュースラ（NS）' };
 
+    // 工事項目から必要人工を自動計算し「人工費」項目へ反映する
+    const handleAutoLabor = () => {
+        const result = calcLabor(items);
+        if (result.total <= 0) {
+            alert('人工を計算できる工事項目がありません。\n先に数量を入力してください。');
+            return;
+        }
+
+        const laborItem = items.find(i => i.category === '人工' && !i.itemType)
+            || items.find(i => i.category === '人工' && !!i.name);
+        if (!laborItem) {
+            alert('人工費の項目が見つかりませんでした。');
+            return;
+        }
+
+        const lines = result.breakdown
+            .slice()
+            .sort((a, b) => b.labor - a.labor)
+            .slice(0, 8)
+            .map(e => `・${e.name}: ${e.quantity} × ${e.laborPerUnit} = ${e.labor.toFixed(2)}人工`);
+
+        const ok = confirm(
+            `工事項目から必要人工を自動計算しました。\n\n` +
+            lines.join('\n') +
+            (result.breakdown.length > 8 ? `\n…ほか ${result.breakdown.length - 8} 件` : '') +
+            `\n\n合計: ${result.rawTotal.toFixed(2)}人工 → ${result.total}人工（0.5人工単位切り上げ）\n\n「人工費」の人工数に反映しますか？`
+        );
+        if (ok) {
+            updateItem(laborItem.id, { quantity: String(result.total), selected: true });
+        }
+    };
+
     return (
         <div className="container" style={{ paddingBottom: '80px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
@@ -323,7 +358,16 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                     <input
                         type="text"
                         value={info.customerName}
-                        onChange={e => updateInfo({ customerName: e.target.value })}
+                        list="customer-suggestion-list"
+                        onChange={e => {
+                            const name = e.target.value;
+                            const matched = customers.find(c => c.name === name);
+                            updateInfo({
+                                customerName: name,
+                                customerId: matched?.id,
+                                ...(matched?.address && !info.address ? { address: matched.address } : {})
+                            });
+                        }}
                         style={{ width: '100%' }}
                         placeholder="例：〇〇株式会社 様"
                     />
@@ -487,6 +531,15 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
 
                         {isOpen && (
                             <div className="items-list" style={{ padding: '1.5rem', paddingTop: '1rem' }}>
+                                {category === '人工' && (
+                                    <button
+                                        className="btn btn-secondary"
+                                        onClick={handleAutoLabor}
+                                        style={{ marginBottom: '1rem', color: 'var(--primary)', borderColor: 'var(--primary)', fontSize: '0.875rem' }}
+                                    >
+                                        <Calculator size={16} /> 工事項目から人工を自動計算
+                                    </button>
+                                )}
                                 {getItemsByCategory(category).map(item => {
                                     const isDynamic = !!item.itemType;
                                     const isCable = item.itemType === 'cv' || item.itemType === 'cvt' || item.itemType === 'slat';
@@ -720,6 +773,8 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
                 );
             })}
 
+            <CostPanel items={items} />
+
             <div className="fixed-bottom-bar">
                 <button className="btn btn-secondary" onClick={onReset} title="入力をリセット">
                     <Trash2 size={20} />
@@ -736,6 +791,11 @@ export default function InputScreen({ items, info, customRefs, copperRate, coppe
             <datalist id="device-suggestion-list">
                 {DEVICE_SUGGESTIONS.map((name) => (
                     <option key={name} value={name} />
+                ))}
+            </datalist>
+            <datalist id="customer-suggestion-list">
+                {customers.map((c) => (
+                    <option key={c.id} value={c.name} />
                 ))}
             </datalist>
         </div>

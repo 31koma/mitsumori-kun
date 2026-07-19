@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { FileEdit, Upload, FileSpreadsheet, Save, Trash2, MapPinned } from 'lucide-react';
+import { FileEdit, Upload, FileSpreadsheet, Save, Trash2, MapPinned, RefreshCw, Users } from 'lucide-react';
+import { refreshApp } from '../utils/appRefresh';
 
 interface TopScreenProps {
     onStart: () => void;
     onOpenPlot: () => void;
     onViewSaved: () => void;
+    onOpenCustomers?: () => void;
     hasSavedCount: number;
+    customerCount?: number;
 }
 
-export default function TopScreen({ onStart, onOpenPlot, onViewSaved, hasSavedCount }: TopScreenProps) {
+export default function TopScreen({ onStart, onOpenPlot, onViewSaved, onOpenCustomers, hasSavedCount, customerCount = 0 }: TopScreenProps) {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const invoiceInputRef = useRef<HTMLInputElement>(null);
     const [hasTemplate, setHasTemplate] = useState(false);
@@ -67,9 +70,20 @@ export default function TopScreen({ onStart, onOpenPlot, onViewSaved, hasSavedCo
 
     return (
         <div className="container top-screen">
+            <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={refreshApp}
+                style={{ alignSelf: 'flex-end', padding: '0.55rem 0.75rem', fontSize: '0.9rem' }}
+                title="アプリを再読み込み"
+            >
+                <RefreshCw size={16} />
+                更新
+            </button>
+
             <div>
                 <FileEdit size={64} color="var(--primary)" style={{ marginBottom: '1rem' }} />
-                <h1>電気工事見積もりくん</h1>
+                <h1>電工見積もりくん</h1>
                 <p>現場でサッと、簡単・正確な見積もりを。</p>
             </div>
 
@@ -156,6 +170,13 @@ export default function TopScreen({ onStart, onOpenPlot, onViewSaved, hasSavedCo
                         <Save size={20} />
                         保存した見積を見る {hasSavedCount > 0 ? `(${hasSavedCount}件)` : ''}
                     </button>
+
+                    {onOpenCustomers && (
+                        <button className="btn btn-secondary btn-large" onClick={onOpenCustomers} style={{ backgroundColor: 'var(--bg-color)', color: 'var(--primary)', borderColor: 'var(--primary)' }}>
+                            <Users size={20} />
+                            顧客管理 {customerCount > 0 ? `(${customerCount}件)` : ''}
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

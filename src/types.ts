@@ -20,6 +20,19 @@ export interface EstimateInfo {
     address: string;
     assignee: string;
     estimateNumber?: string;
+    customerId?: string;
+}
+
+export interface Customer {
+    id: string;
+    name: string;
+    contactPerson?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    note?: string;
+    createdAt: string;
+    updatedAt: string;
 }
 
 export interface SavedEstimate {
@@ -102,7 +115,7 @@ export interface EraserShape {
 
 export interface ConstructionBox {
     id: string;
-    type?: 'JB' | 'outlet' | 'switch' | 'dl';
+    type: 'JB' | 'outlet' | 'switch' | 'dl';
     label: string;
     size: string;
     note?: string;
@@ -130,6 +143,19 @@ export interface ConstructionDrawingState {
     erasers: EraserShape[];
     scaleMetersPerPixel: number;
     pages?: Record<string, ConstructionPageState>;
+    symbolSizeMigrationVersion?: string;
+}
+
+export interface ConstructionProject {
+    id: string;
+    name: string;
+    updatedAt: string;
+    drawing: PlotDrawingState;
+    placements: PlotPlacement[];
+    construction: ConstructionDrawingState;
+    scale: number;
+    symbolSizeCategory: 'small' | 'medium' | 'large';
+    recentSymbolTypes?: string[];
 }
 
 export const defaultInfo: EstimateInfo = {

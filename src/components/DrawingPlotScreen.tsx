@@ -4,19 +4,21 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
     ArrowLeft,
-    Check,
     Copy,
     Download,
     Eraser,
     Eye,
     EyeOff,
     FileSpreadsheet,
+    FolderOpen,
     MapPinned,
     Minus,
     MousePointer2,
     PenLine,
     Plus,
+    RefreshCw,
     RotateCcw,
+    Save,
     Trash2,
 } from 'lucide-react';
 
@@ -31,7 +33,11 @@ import {
     type WiringLine,
     type WiringLineType,
     type WiringPoint,
+    type ConstructionProject,
 } from '../types';
+
+import { constructionDB } from '../utils/db';
+import { refreshApp } from '../utils/appRefresh';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -40,6 +46,7 @@ const DEFAULT_ERASER_WIDTH = 14;
 
 type WorkspaceMode = 'quantity' | 'construction';
 type ConstructionTool = 'select' | 'wire' | 'orthogonalWire' | 'eraseLine' | 'eraseRect' | 'text' | 'box';
+type ConstructionEstimateSummaryItem = { name: string; quantity: number; unit: 'm' | '個'; category: '電線' | '配線器具' | '機器' };
 type SymbolType = { key: string; name: string; short: string; color: string; label?: string };
 type PaletteGroup = { key: string; label: string; short: string; color: string; children: SymbolType[] };
 type OpenPalettePanel = { groupKey: string; top: number; left: number } | null;
@@ -180,7 +187,7 @@ const PALETTE_GROUPS: PaletteGroup[] = [
 interface DrawingPlotScreenProps {
     onBack: () => void;
     onApplyToEstimate: (placements: PlotPlacement[]) => void;
-    onApplyWiresToEstimate: (summary: Array<{ name: string; meters: number }>) => void;
+    onApplyWiresToEstimate: (summary: ConstructionEstimateSummaryItem[]) => void;
     onOpenEstimateInput: () => void;
     drawing: PlotDrawingState;
     placements: PlotPlacement[];
@@ -190,6 +197,16 @@ interface DrawingPlotScreenProps {
     onPlacementsChange: (placements: PlotPlacement[]) => void;
     onConstructionChange: (construction: ConstructionDrawingState) => void;
     onScaleChange: (scale: number) => void;
+    activeProjectId: string;
+    activeProjectName: string;
+    onProjectChange: (
+        projectId: string,
+        projectName: string,
+        drawing: PlotDrawingState | null,
+        placements: PlotPlacement[] | null,
+        construction: ConstructionDrawingState | null,
+        scale: number
+    ) => void;
 }
 
 const pointDistance = (a: WiringPoint, b: WiringPoint) => Math.hypot(b.x - a.x, b.y - a.y);
@@ -202,13 +219,92 @@ const snapPoint = (previous: WiringPoint | undefined, point: WiringPoint, enable
     return dx >= dy ? { x: point.x, y: previous.y } : { x: previous.x, y: point.y };
 };
 
-const getBoxSummaryKey = (label: string, size?: string) => {
-    if (!size) return label;
-    const firstDim = size.split('×')[0].trim();
-    if (/^\d+/.test(firstDim)) {
-        return `${label}${firstDim}`;
+const CONSTRUCTION_SYMBOLS: Record<ConstructionBox['type'], { name: string; defaultLabel: string; mark: string; shape: 'square' | 'circle' | 'text'; color: string; category: '配線器具' | '機器' }> = {
+    JB: { name: 'JB', defaultLabel: 'JB', mark: '□JB', shape: 'square', color: '#111827', category: '配線器具' },
+    outlet: { name: 'コンセント', defaultLabel: '2', mark: '○2', shape: 'circle', color: '#0f766e', category: '配線器具' },
+    switch: { name: 'スイッチ', defaultLabel: 'S', mark: 'S', shape: 'text', color: '#d97706', category: '配線器具' },
+    dl: { name: 'DL', defaultLabel: 'DL', mark: '○DL', shape: 'circle', color: '#7c3aed', category: '機器' },
+};
+
+const getConstructionSymbol = (type?: ConstructionBox['type']) => CONSTRUCTION_SYMBOLS[type ?? 'JB'] ?? CONSTRUCTION_SYMBOLS.JB;
+
+const CONSTRUCTION_SYMBOL_SIZE_PRESETS = {
+    small: { size: 20, fontSize: 7 },
+    medium: { size: 40, fontSize: 11 },
+    large: { size: 60, fontSize: 16 },
+} as const;
+const CONSTRUCTION_SYMBOL_SIZE_MIGRATION_VERSION = '2026-06-01-symbol-size-v2';
+
+const shrinkLegacyConstructionBox = (box: ConstructionBox): ConstructionBox => {
+    const currentSize = Math.max(box.width, box.height);
+    let nextSize = currentSize;
+    let nextFontSize = box.fontSize ?? 16;
+
+    if (currentSize >= 76) {
+        nextSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.large.size;
+        nextFontSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.large.fontSize;
+    } else if (currentSize >= 56) {
+        nextSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.medium.size;
+        nextFontSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.medium.fontSize;
+    } else if (currentSize >= 36) {
+        nextSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.small.size;
+        nextFontSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS.small.fontSize;
     }
-    return `${label} (${size})`;
+
+    if (nextSize === currentSize && nextFontSize === box.fontSize) return box;
+
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    return {
+        ...box,
+        x: Math.round(cx - nextSize / 2),
+        y: Math.round(cy - nextSize / 2),
+        width: nextSize,
+        height: nextSize,
+        fontSize: nextFontSize,
+    };
+};
+
+const shrinkLegacyConstructionSymbols = (state: ConstructionDrawingState): ConstructionDrawingState => {
+    if (state.symbolSizeMigrationVersion === CONSTRUCTION_SYMBOL_SIZE_MIGRATION_VERSION) return state;
+
+    let changed = false;
+    const pages = Object.fromEntries(
+        Object.entries(state.pages ?? {}).map(([pageNumber, pageState]) => {
+            const boxes = (pageState.boxes ?? []).map((box) => {
+                const nextBox = shrinkLegacyConstructionBox(box);
+                if (nextBox !== box) changed = true;
+                return nextBox;
+            });
+            return [pageNumber, { ...pageState, boxes }];
+        }),
+    );
+
+    if (!changed) {
+        return {
+            ...state,
+            symbolSizeMigrationVersion: CONSTRUCTION_SYMBOL_SIZE_MIGRATION_VERSION,
+        };
+    }
+
+    return {
+        ...state,
+        symbolSizeMigrationVersion: CONSTRUCTION_SYMBOL_SIZE_MIGRATION_VERSION,
+        pages,
+        ...(pages['1']
+            ? {
+                  wires: pages['1'].wires,
+                  erasers: pages['1'].erasers,
+                  scaleMetersPerPixel: pages['1'].scaleMetersPerPixel,
+              }
+            : {}),
+    };
+};
+
+const getConstructionBoxSummaryKey = (box: ConstructionBox) => {
+    const symbol = getConstructionSymbol(box.type);
+    const label = box.label.trim();
+    return label && label !== symbol.defaultLabel ? `${symbol.name} (${label})` : symbol.name;
 };
 
 export default function DrawingPlotScreen({
@@ -224,6 +320,9 @@ export default function DrawingPlotScreen({
     onPlacementsChange,
     onConstructionChange,
     onScaleChange,
+    activeProjectId,
+    activeProjectName,
+    onProjectChange,
 }: DrawingPlotScreenProps) {
     const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('quantity');
     const [constructionTool, setConstructionTool] = useState<ConstructionTool>('wire');
@@ -232,6 +331,12 @@ export default function DrawingPlotScreen({
     const [selectedWireId, setSelectedWireId] = useState<string>('');
     const [selectedEraserId, setSelectedEraserId] = useState<string>('');
     const [selectedBoxId, setSelectedBoxId] = useState<string>('');
+    const [symbolSizeCategory, setSymbolSizeCategory] = useState<'small' | 'medium' | 'large'>('small');
+    const [recentSymbolTypes, setRecentSymbolTypes] = useState<string[]>(['JB', 'outlet', 'switch', 'dl']);
+    const [isProjectListModalOpen, setIsProjectListModalOpen] = useState(false);
+    const [savedProjects, setSavedProjects] = useState<ConstructionProject[]>([]);
+    const [symbolSelectPanelOpen, setSymbolSelectPanelOpen] = useState(false);
+    const [selectedSymbolType, setSelectedSymbolType] = useState<'JB' | 'outlet' | 'switch' | 'dl'>('JB');
     const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
     const [draftWirePoints, setDraftWirePoints] = useState<WiringPoint[]>([]);
     const [previewPoint, setPreviewPoint] = useState<WiringPoint | null>(null);
@@ -341,7 +446,7 @@ export default function DrawingPlotScreen({
         })).filter((item) => item.count > 0);
         const boxes = new Map<string, number>();
         (pageState.boxes ?? []).forEach((box) => {
-            const key = getBoxSummaryKey(box.label, box.size);
+            const key = getConstructionBoxSummaryKey(box);
             boxes.set(key, (boxes.get(key) ?? 0) + 1);
         });
         return { page, wires: Array.from(wires.entries()), devices, boxes: Array.from(boxes.entries()) };
@@ -352,7 +457,7 @@ export default function DrawingPlotScreen({
         drawingPages.forEach((page) => {
             const pageState = getPageConstruction(page.pageNumber);
             (pageState.boxes ?? []).forEach((box) => {
-                const key = getBoxSummaryKey(box.label, box.size);
+                const key = getConstructionBoxSummaryKey(box);
                 summary.set(key, (summary.get(key) ?? 0) + 1);
             });
         });
@@ -387,6 +492,120 @@ export default function DrawingPlotScreen({
             scaleMetersPerPixel: currentPageUpdates.scaleMetersPerPixel,
         });
         if (!options.keepRedo) setRedoStack([]);
+    };
+
+    useEffect(() => {
+        const nextConstruction = shrinkLegacyConstructionSymbols(construction);
+        if (nextConstruction !== construction) {
+            onConstructionChange(nextConstruction);
+            updateStatus('既存シンボルを新しい小さめサイズへ調整しました。');
+        }
+    }, [construction, onConstructionChange]);
+
+    // 自動保存 (Auto-save) ロジック
+    useEffect(() => {
+        if (!activeProjectId) return;
+        const project: ConstructionProject = {
+            id: activeProjectId,
+            name: activeProjectName,
+            updatedAt: new Date().toLocaleString('ja-JP'),
+            drawing,
+            placements,
+            construction,
+            scale,
+            symbolSizeCategory,
+            recentSymbolTypes,
+        };
+        constructionDB.saveProject(project).catch((err) => {
+            console.error('Auto-save failed:', err);
+        });
+    }, [drawing, placements, construction, scale, activeProjectId, activeProjectName, symbolSizeCategory, recentSymbolTypes]);
+
+
+    // 案件管理用のアクション関数
+    const handleSaveProjectUI = () => {
+        if (activeProjectId) {
+            // 上書き保存 (自動保存も走るが、明示的保存として通知)
+            updateStatus(`案件「${activeProjectName}」を保存しました。`);
+            alert(`案件「${activeProjectName}」を上書き保存しました。`);
+        } else {
+            const name = prompt('案件名を入力してください。', drawing.name ? drawing.name.replace(/\.[^/.]+$/, '') : '');
+            if (!name) return;
+            const newId = `project_${Date.now()}`;
+            onProjectChange(newId, name, drawing, placements, construction, scale);
+            updateStatus(`案件「${name}」を新規保存しました。`);
+            alert(`案件「${name}」を保存しました！次回からPDF読み込みなしで再開できます。`);
+        }
+    };
+
+    const handleSaveAsProjectUI = () => {
+        const name = prompt('別名で保存する案件名を入力してください。', activeProjectName ? `${activeProjectName} - コピー` : '');
+        if (!name) return;
+        const newId = `project_${Date.now()}`;
+        onProjectChange(newId, name, drawing, placements, construction, scale);
+        updateStatus(`案件「${name}」を別名で保存しました。`);
+        alert(`案件「${name}」を別名で保存しました。`);
+    };
+
+    const handleLoadProjectUI = (project: ConstructionProject) => {
+        onProjectChange(project.id, project.name, project.drawing, project.placements, project.construction, project.scale);
+        if (project.symbolSizeCategory) {
+            setSymbolSizeCategory(project.symbolSizeCategory);
+        }
+        if (project.recentSymbolTypes) {
+            setRecentSymbolTypes(project.recentSymbolTypes);
+        }
+        setIsProjectListModalOpen(false);
+        updateStatus(`案件「${project.name}」を開きました。`);
+    };
+
+    const handleDeleteProjectUI = async (id: string, name: string) => {
+        if (!confirm(`案件「${name}」を本当に削除しますか？\n※この操作は元に戻せません。`)) return;
+        try {
+            await constructionDB.deleteProject(id);
+            if (activeProjectId === id) {
+                // 現在開いている案件を削除した場合は状態をクリア
+                onProjectChange('', '', { name: '', width: 0, height: 0, src: '' }, [], {
+                    lineTypes: normalizedConstruction.lineTypes,
+                    wires: [],
+                    erasers: [],
+                    scaleMetersPerPixel: 0.01,
+                    pages: {}
+                }, 1);
+            }
+            // リストを更新
+            const list = await constructionDB.getAllProjects();
+            setSavedProjects(list);
+            updateStatus(`案件「${name}」を削除しました。`);
+        } catch (err) {
+            console.error(err);
+            alert('案件の削除に失敗しました。');
+        }
+    };
+
+    const handleCreateNewProjectUI = () => {
+        if (confirm('現在の施工図を閉じて、新しく別の図面を読み込みますか？\n※保存していない内容は失われます。')) {
+            onProjectChange('', '', { name: '', width: 0, height: 0, src: '' }, [], {
+                lineTypes: normalizedConstruction.lineTypes,
+                wires: [],
+                erasers: [],
+                scaleMetersPerPixel: 0.01,
+                pages: {}
+            }, 1);
+            setSymbolSizeCategory('small');
+            updateStatus('新しい図面を選択してください。');
+        }
+    };
+
+    const handleOpenProjectListModal = async () => {
+        try {
+            const list = await constructionDB.getAllProjects();
+            setSavedProjects(list);
+            setIsProjectListModalOpen(true);
+        } catch (err) {
+            console.error(err);
+            alert('案件リストの取得に失敗しました。');
+        }
     };
 
     const getPositionLabel = (xRatio: number, yRatio: number) => {
@@ -582,27 +801,43 @@ export default function DrawingPlotScreen({
         if (workspaceMode === 'construction' && constructionTool === 'box') {
             const point = getCanvasPoint(event);
             if (!point) return;
+
+            const symbolSize = CONSTRUCTION_SYMBOL_SIZE_PRESETS[symbolSizeCategory];
+            const sizePx = symbolSize.size;
+            const fontSize = symbolSize.fontSize;
+
+            const symbolDefinition = getConstructionSymbol(selectedSymbolType);
+            const defaultLabel = symbolDefinition.defaultLabel;
+            const strokeColor = symbolDefinition.color;
+            const fillColor = '#ffffff';
+
             const newBox: ConstructionBox = {
                 id: crypto.randomUUID(),
-                type: 'JB',
-                label: 'JB',
-                size: '100×100×100',
+                type: selectedSymbolType,
+                label: defaultLabel,
+                size: selectedSymbolType === 'JB' ? '100×100×100' : '標準',
                 note: '',
-                x: Math.round(point.x - 30),
-                y: Math.round(point.y - 30),
-                width: 60,
-                height: 60,
-                strokeColor: '#111827',
+                x: Math.round(point.x - sizePx / 2),
+                y: Math.round(point.y - sizePx / 2),
+                width: sizePx,
+                height: sizePx,
+                strokeColor: strokeColor,
                 strokeWidth: 2,
-                fillColor: '#ffffff',
-                fontSize: 16,
+                fillColor: fillColor,
+                fontSize: fontSize,
                 rotation: 0,
             };
+
+            setRecentSymbolTypes((prev) => {
+                const next = prev.filter((t) => t !== selectedSymbolType);
+                return [selectedSymbolType, ...next];
+            });
+
             updateConstruction({ boxes: [...(currentPageConstruction.boxes ?? []), newBox] });
             setSelectedBoxId(newBox.id);
             setSelectedWireId('');
             setSelectedEraserId('');
-            updateStatus('ジョイントボックスを配置しました。右側の属性で表示名やサイズを変更できます。');
+            updateStatus(`${symbolDefinition.name}を配置しました。選択ツールで移動・Delete削除・右側の属性で名称変更できます。`);
             return;
         }
         if (workspaceMode !== 'construction' || (constructionTool !== 'wire' && constructionTool !== 'orthogonalWire')) return;
@@ -862,11 +1097,41 @@ export default function DrawingPlotScreen({
     };
 
     const handleApplyWires = () => {
-        if (!lengthSummary.length) {
-            updateStatus('見積へ反映する配線がありません。');
+        const symbolSummary = new Map<string, { quantity: number; category: '配線器具' | '機器' }>();
+        drawingPages.forEach((page) => {
+            const pageState = getPageConstruction(page.pageNumber);
+            (pageState.boxes ?? []).forEach((box) => {
+                const name = getConstructionBoxSummaryKey(box);
+                const symbol = getConstructionSymbol(box.type);
+                const current = symbolSummary.get(name);
+                if (current) {
+                    current.quantity += 1;
+                } else {
+                    symbolSummary.set(name, { quantity: 1, category: symbol.category });
+                }
+            });
+        });
+
+        const summary: ConstructionEstimateSummaryItem[] = [
+            ...lengthSummary.map((item) => ({
+                name: item.name.replace(/\s+/g, ''),
+                quantity: Number(item.meters.toFixed(1)),
+                unit: 'm' as const,
+                category: '電線' as const,
+            })),
+            ...Array.from(symbolSummary.entries()).map(([name, item]) => ({
+                name,
+                quantity: item.quantity,
+                unit: '個' as const,
+                category: item.category,
+            })),
+        ];
+
+        if (!summary.length) {
+            updateStatus('見積へ反映する配線・シンボルがありません。');
             return;
         }
-        onApplyWiresToEstimate(lengthSummary.map((item) => ({ name: item.name.replace(/\s+/g, ''), meters: Number(item.meters.toFixed(1)) })));
+        onApplyWiresToEstimate(summary);
     };
 
     const handleFitToScreen = () => {
@@ -1038,7 +1303,7 @@ export default function DrawingPlotScreen({
     };
 
     const exportQuantityCsv = () => {
-        if (!lengthSummary.length) {
+        if (!lengthSummary.length && !boxSummary.length) {
             updateStatus('出力する数量表がありません。');
             return;
         }
@@ -1136,14 +1401,24 @@ export default function DrawingPlotScreen({
         (pageState.boxes ?? []).forEach((box) => {
             const cx = box.x + box.width / 2;
             const cy = box.y + box.height / 2;
+            const symbol = getConstructionSymbol(box.type);
             context.save();
             context.translate(cx, cy);
             context.rotate(((box.rotation ?? 0) * Math.PI) / 180);
             context.fillStyle = box.fillColor ?? '#ffffff';
             context.strokeStyle = box.strokeColor ?? '#111827';
             context.lineWidth = box.strokeWidth ?? 2;
-            context.fillRect(-box.width / 2, -box.height / 2, box.width, box.height);
-            context.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
+
+            if (symbol.shape === 'square') {
+                context.fillRect(-box.width / 2, -box.height / 2, box.width, box.height);
+                context.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
+            } else if (symbol.shape === 'circle') {
+                context.beginPath();
+                context.arc(0, 0, box.width / 2, 0, Math.PI * 2);
+                context.fill();
+                context.stroke();
+            }
+
             context.fillStyle = box.strokeColor ?? '#111827';
             context.font = `700 ${box.fontSize ?? 16}px sans-serif`;
             context.textAlign = 'center';
@@ -1350,6 +1625,9 @@ export default function DrawingPlotScreen({
                         <button className="btn btn-secondary" onClick={handleCopyJson} style={{ padding: '0.6rem 0.8rem' }}>
                             <Copy size={16} /> JSON
                         </button>
+                        <button className="btn btn-secondary" onClick={refreshApp} title="アプリを再読み込み" style={{ padding: '0.6rem 0.8rem' }}>
+                            <RefreshCw size={16} /> 更新
+                        </button>
                     </div>
                 </div>
                 <p style={{ marginTop: '0.65rem', marginBottom: 0, color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'left' }}>{status}</p>
@@ -1492,24 +1770,22 @@ export default function DrawingPlotScreen({
                                     left: 12,
                                     zIndex: 30,
                                     display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.35rem',
                                     flexWrap: 'wrap',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
                                     maxWidth: 'calc(100% - 24px)',
-                                    padding: '0.45rem',
+                                    padding: '0.35rem',
                                     borderRadius: 'var(--radius-md)',
                                     background: 'rgba(255,255,255,0.96)',
                                     border: '1px solid var(--border-color)',
                                     boxShadow: 'var(--shadow-lg)',
-                                    textAlign: 'left',
                                 }}
                             >
                                 {[
-                                    { key: 'select', label: '選択', icon: <MousePointer2 size={15} /> },
-                                    { key: 'eraseLine', label: '消す', icon: <Eraser size={15} /> },
-                                    { key: 'wire', label: '配線', icon: <PenLine size={15} /> },
-                                    { key: 'orthogonalWire', label: '直角配線', icon: <PenLine size={15} /> },
-                                    { key: 'box', label: 'ジョイントボックス', icon: <Check size={15} /> },
+                                    { key: 'select', label: '選択', icon: <MousePointer2 size={14} /> },
+                                    { key: 'eraseLine', label: '消す', icon: <Eraser size={14} /> },
+                                    { key: 'wire', label: '配線', icon: <PenLine size={14} /> },
+                                    { key: 'orthogonalWire', label: '直角', icon: <PenLine size={14} /> },
                                 ].map((tool) => (
                                     <button
                                         key={tool.key}
@@ -1517,35 +1793,197 @@ export default function DrawingPlotScreen({
                                         className="btn btn-secondary"
                                         onClick={() => {
                                             setConstructionTool(tool.key as ConstructionTool);
+                                            setSymbolSelectPanelOpen(false);
                                             if (tool.key === 'wire' || tool.key === 'orthogonalWire') {
                                                 setSelectedWireId('');
                                                 setSelectedEraserId('');
-                                                updateStatus(tool.key === 'orthogonalWire' ? '直角配線を開始できます。クリックで始点を置いてください。' : '配線を開始できます。クリックで始点を置いてください。');
-                                            } else if (tool.key === 'box') {
-                                                setSelectedWireId('');
-                                                setSelectedEraserId('');
-                                                updateStatus('図面上をクリックすると100×100のジョイントボックスを配置します。');
+                                                updateStatus(tool.key === 'orthogonalWire' ? '直角配線を開始できます。' : '配線を開始できます。');
                                             }
                                         }}
                                         style={{
-                                            padding: '0.45rem 0.6rem',
-                                            fontSize: '0.82rem',
+                                            padding: '0.35rem 0.5rem',
+                                            fontSize: '0.78rem',
                                             borderColor: constructionTool === tool.key ? 'var(--primary)' : undefined,
                                             color: constructionTool === tool.key ? 'var(--primary)' : '#0f172a',
                                             background: constructionTool === tool.key ? '#eff6ff' : 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '0.25rem',
                                         }}
                                     >
                                         {tool.icon}
                                         {tool.label}
                                     </button>
                                 ))}
-                                <button className="btn btn-secondary" onClick={addTextLabel} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
+                                
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => {
+                                        setConstructionTool('text');
+                                        setSymbolSelectPanelOpen(false);
+                                        addTextLabel();
+                                    }}
+                                    style={{
+                                        padding: '0.35rem 0.5rem',
+                                        fontSize: '0.78rem',
+                                        borderColor: constructionTool === 'text' ? 'var(--primary)' : undefined,
+                                        color: constructionTool === 'text' ? 'var(--primary)' : '#0f172a',
+                                        background: constructionTool === 'text' ? '#eff6ff' : 'white',
+                                    }}
+                                >
                                     文字
                                 </button>
+
+                                <div style={{ position: 'relative' }}>
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={() => {
+                                            setConstructionTool('box');
+                                            setSymbolSelectPanelOpen(!symbolSelectPanelOpen);
+                                            setSelectedWireId('');
+                                            setSelectedEraserId('');
+                                        }}
+                                        style={{
+                                            padding: '0.35rem 0.5rem',
+                                            fontSize: '0.78rem',
+                                            borderColor: constructionTool === 'box' ? 'var(--primary)' : undefined,
+                                            color: constructionTool === 'box' ? 'var(--primary)' : '#0f172a',
+                                            background: constructionTool === 'box' ? '#eff6ff' : 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '0.25rem',
+                                        }}
+                                    >
+                                        <Plus size={14} />
+                                        シンボル
+                                    </button>
+
+                                    {symbolSelectPanelOpen && (
+                                        <div
+                                            style={{
+                                                position: 'absolute',
+                                                top: '100%',
+                                                left: 0,
+                                                marginTop: '0.35rem',
+                                                zIndex: 35,
+                                                width: '200px',
+                                                background: 'white',
+                                                border: '1px solid var(--border-color)',
+                                                borderRadius: 'var(--radius-md)',
+                                                boxShadow: 'var(--shadow-lg)',
+                                                padding: '0.45rem',
+                                                display: 'grid',
+                                                gap: '0.35rem',
+                                            }}
+                                        >
+                                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.25rem', marginBottom: '0.15rem', fontWeight: 700 }}>
+                                                配置サイズ初期値
+                                            </div>
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.25rem' }}>
+                                                {([
+                                                    { key: 'small', label: '小' },
+                                                    { key: 'medium', label: '標準' },
+                                                    { key: 'large', label: '大' }
+                                                ] as const).map((sz) => (
+                                                    <button
+                                                        key={sz.key}
+                                                        type="button"
+                                                        onClick={() => setSymbolSizeCategory(sz.key)}
+                                                        style={{
+                                                            fontSize: '0.72rem',
+                                                            padding: '0.25rem',
+                                                            border: '1px solid var(--border-color)',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            background: symbolSizeCategory === sz.key ? 'var(--primary)' : 'white',
+                                                            color: symbolSizeCategory === sz.key ? 'white' : '#0f172a',
+                                                            cursor: 'pointer'
+                                                        }}
+                                                    >
+                                                        {sz.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+
+                                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.25rem', marginTop: '0.25rem', fontWeight: 700 }}>
+                                                最近使用した順
+                                            </div>
+                                            {recentSymbolTypes.map((symType) => {
+                                                const symbol = getConstructionSymbol(symType as ConstructionBox['type']);
+
+                                                return (
+                                                    <button
+                                                        key={symType}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setSelectedSymbolType(symType as ConstructionBox['type']);
+                                                            setSymbolSelectPanelOpen(false);
+                                                            updateStatus(`${symbol.name}の配置準備ができました。図面上をクリックしてください。`);
+                                                        }}
+                                                        style={{
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'space-between',
+                                                            padding: '0.35rem 0.5rem',
+                                                            fontSize: '0.78rem',
+                                                            border: selectedSymbolType === symType ? '1px solid var(--primary)' : '1px solid var(--border-color)',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            background: selectedSymbolType === symType ? '#eff6ff' : 'white',
+                                                            color: '#0f172a',
+                                                            cursor: 'pointer',
+                                                            textAlign: 'left'
+                                                        }}
+                                                    >
+                                                        <strong style={{ fontFamily: 'monospace' }}>{symbol.mark}</strong>
+                                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{symbol.name}</span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={handleSaveProjectUI}
+                                    style={{
+                                        padding: '0.35rem 0.5rem',
+                                        fontSize: '0.78rem',
+                                        color: '#0f172a',
+                                        background: 'white',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.25rem',
+                                    }}
+                                >
+                                    <Save size={14} />
+                                    保存
+                                </button>
+
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={exportConstructionPdf}
+                                    style={{
+                                        padding: '0.35rem 0.5rem',
+                                        fontSize: '0.78rem',
+                                        color: '#0f172a',
+                                        background: 'white',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.25rem',
+                                    }}
+                                >
+                                    <Download size={14} />
+                                    出力
+                                </button>
+
                                 <select
                                     value={selectedLineTypeId}
                                     onChange={(event) => handleSelectedLineTypeChange(event.target.value)}
-                                    style={{ width: '155px', padding: '0.45rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', font: 'inherit', fontSize: '0.82rem' }}
+                                    style={{ width: '120px', padding: '0.35rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', font: 'inherit', fontSize: '0.78rem' }}
                                     title="線種選択"
                                 >
                                     {normalizedConstruction.lineTypes.map((lineType) => (
@@ -1554,20 +1992,18 @@ export default function DrawingPlotScreen({
                                         </option>
                                     ))}
                                 </select>
-                                <button className="btn btn-secondary" onClick={deleteSelectedWire} disabled={!selectedWireId && !selectedEraserId && !selectedBoxId} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
-                                    <Trash2 size={15} /> 削除
+
+                                <button className="btn btn-secondary" onClick={deleteSelectedWire} disabled={!selectedWireId && !selectedEraserId && !selectedBoxId} style={{ padding: '0.35rem 0.5rem', fontSize: '0.78rem', color: '#0f172a', background: 'white' }}>
+                                    <Trash2 size={14} />
                                 </button>
-                                <button className="btn btn-secondary" onClick={handleUndo} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
+                                <button className="btn btn-secondary" onClick={handleUndo} style={{ padding: '0.35rem 0.5rem', fontSize: '0.78rem', color: '#0f172a', background: 'white' }}>
                                     戻る
                                 </button>
-                                <button className="btn btn-secondary" onClick={handleRedo} disabled={!redoStack.length} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
+                                <button className="btn btn-secondary" onClick={handleRedo} disabled={!redoStack.length} style={{ padding: '0.35rem 0.5rem', fontSize: '0.78rem', color: '#0f172a', background: 'white' }}>
                                     進む
                                 </button>
-                                <button className="btn btn-secondary" onClick={finishWire} disabled={draftWirePoints.length < 2} style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem', color: '#0f172a', background: 'white' }}>
-                                    <Check size={15} /> 確定
-                                </button>
-                                <button className="btn btn-primary" onClick={exportConstructionPdf} style={{ padding: '0.45rem 0.7rem', fontSize: '0.82rem' }}>
-                                    <Download size={15} /> PDF出力
+                                <button className="btn btn-secondary" onClick={finishWire} disabled={draftWirePoints.length < 2} style={{ padding: '0.35rem 0.5rem', fontSize: '0.78rem', color: '#0f172a', background: 'white' }}>
+                                    確定
                                 </button>
                             </div>
                         )}
@@ -1717,28 +2153,71 @@ export default function DrawingPlotScreen({
                                             const selected = box.id === selectedBoxId;
                                             const cx = box.x + box.width / 2;
                                             const cy = box.y + box.height / 2;
+                                            const symbol = getConstructionSymbol(box.type);
+                                            const handleBoxMouseDown = (event: React.MouseEvent<SVGElement>) => {
+                                                if (workspaceMode !== 'construction' || constructionTool !== 'select') return;
+                                                event.stopPropagation();
+                                                const start = getCanvasPoint(event.nativeEvent);
+                                                if (!start) return;
+                                                setSelectedBoxId(box.id);
+                                                setSelectedWireId('');
+                                                setSelectedEraserId('');
+                                                setDragState({ kind: 'box', boxId: box.id, start, originalBox: box });
+                                            };
                                             return (
                                                 <g key={box.id} transform={`rotate(${box.rotation ?? 0} ${cx} ${cy})`}>
-                                                    <rect
-                                                        x={box.x}
-                                                        y={box.y}
-                                                        width={box.width}
-                                                        height={box.height}
-                                                        fill={box.fillColor ?? '#ffffff'}
-                                                        stroke={selected ? '#f97316' : (box.strokeColor ?? '#111827')}
-                                                        strokeWidth={selected ? Math.max(box.strokeWidth ?? 2, 3) : (box.strokeWidth ?? 2)}
-                                                        onMouseDown={(event) => {
-                                                            if (workspaceMode !== 'construction' || constructionTool !== 'select') return;
-                                                            event.stopPropagation();
-                                                            const start = getCanvasPoint(event.nativeEvent);
-                                                            if (!start) return;
-                                                            setSelectedBoxId(box.id);
-                                                            setSelectedWireId('');
-                                                            setSelectedEraserId('');
-                                                            setDragState({ kind: 'box', boxId: box.id, start, originalBox: box });
-                                                        }}
-                                                        style={{ cursor: constructionTool === 'select' ? 'move' : 'default' }}
-                                                    />
+                                                    {symbol.shape === 'square' && (
+                                                        <rect
+                                                            x={box.x}
+                                                            y={box.y}
+                                                            width={box.width}
+                                                            height={box.height}
+                                                            fill={box.fillColor ?? '#ffffff'}
+                                                            stroke={selected ? '#f97316' : (box.strokeColor ?? '#111827')}
+                                                            strokeWidth={selected ? Math.max(box.strokeWidth ?? 2, 3) : (box.strokeWidth ?? 2)}
+                                                            onMouseDown={handleBoxMouseDown}
+                                                            style={{ cursor: constructionTool === 'select' ? 'move' : 'default' }}
+                                                        />
+                                                    )}
+                                                    {symbol.shape === 'circle' && (
+                                                        <circle
+                                                            cx={cx}
+                                                            cy={cy}
+                                                            r={box.width / 2}
+                                                            fill={box.fillColor ?? '#ffffff'}
+                                                            stroke={selected ? '#f97316' : (box.strokeColor ?? '#111827')}
+                                                            strokeWidth={selected ? Math.max(box.strokeWidth ?? 2, 3) : (box.strokeWidth ?? 2)}
+                                                            onMouseDown={handleBoxMouseDown}
+                                                            style={{ cursor: constructionTool === 'select' ? 'move' : 'default' }}
+                                                        />
+                                                    )}
+                                                    {symbol.shape === 'text' && (
+                                                        <>
+                                                            <circle
+                                                                cx={cx}
+                                                                cy={cy}
+                                                                r={box.width / 2}
+                                                                fill="transparent"
+                                                                stroke={selected ? '#f97316' : 'transparent'}
+                                                                strokeWidth={selected ? Math.max(box.strokeWidth ?? 2, 3) : 1}
+                                                                onMouseDown={handleBoxMouseDown}
+                                                                style={{ cursor: constructionTool === 'select' ? 'move' : 'default' }}
+                                                            />
+                                                            {selected && (
+                                                                <rect
+                                                                    x={box.x}
+                                                                    y={box.y}
+                                                                    width={box.width}
+                                                                    height={box.height}
+                                                                    fill="none"
+                                                                    stroke="#f97316"
+                                                                    strokeDasharray="6 4"
+                                                                    strokeWidth={2}
+                                                                    pointerEvents="none"
+                                                                />
+                                                            )}
+                                                        </>
+                                                    )}
                                                     <text
                                                         x={cx}
                                                         y={cy}
@@ -1891,6 +2370,27 @@ export default function DrawingPlotScreen({
                 </section>
 
                 <aside className="card" style={{ padding: '1rem', marginBottom: 0, height: '100%', minHeight: 0, overflow: 'auto', textAlign: 'left' }}>
+                    <h2 style={{ fontSize: '1rem', marginBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>施工図案件</span>
+                        {activeProjectName && <span style={{ fontSize: '0.75rem', background: '#eff6ff', color: 'var(--primary)', padding: '0.15rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>{activeProjectName}</span>}
+                    </h2>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem', marginBottom: '1.2rem' }}>
+                        <button className="btn btn-secondary" onClick={handleSaveProjectUI} style={{ padding: '0.45rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+                            <Save size={13} />
+                            保存
+                        </button>
+                        <button className="btn btn-secondary" onClick={handleSaveAsProjectUI} style={{ padding: '0.45rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+                            別名保存
+                        </button>
+                        <button className="btn btn-secondary" onClick={handleOpenProjectListModal} style={{ padding: '0.45rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+                            <FolderOpen size={13} />
+                            開く
+                        </button>
+                        <button className="btn btn-secondary" onClick={handleCreateNewProjectUI} style={{ padding: '0.45rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+                            新規図面
+                        </button>
+                    </div>
+
                     <h2 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>レイヤー</h2>
                     {['PDF背景レイヤー', '既存配線消し込みレイヤー', '新規配線レイヤー', 'マーク／器具レイヤー', '文字ラベルレイヤー'].map((layer) => (
                         <div key={layer} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.45rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
@@ -1947,38 +2447,79 @@ export default function DrawingPlotScreen({
                                     名称
                                     <input value={selectedBox.label} onChange={(event) => handleSelectedBoxUpdate({ label: event.target.value })} list="construction-box-labels" style={{ width: '100%' }} />
                                 </label>
-                                <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                    サイズ
-                                    <select
-                                        value={['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') ? selectedBox.size : 'その他'}
-                                        onChange={(event) => {
-                                            const val = event.target.value;
-                                            if (val === 'その他') {
-                                                handleSelectedBoxUpdate({ size: 'その他' });
-                                            } else {
-                                                handleSelectedBoxUpdate({ size: val });
-                                            }
-                                        }}
-                                        style={{ width: '100%', padding: '0.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
-                                    >
-                                        <option value="100×100×100">100×100×100</option>
-                                        <option value="150×150×100">150×150×100</option>
-                                        <option value="200×200×150">200×200×150</option>
-                                        <option value="300×300×200">300×300×200</option>
-                                        <option value="その他">その他（自由入力）</option>
-                                    </select>
-                                </label>
-                                {(!['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') || selectedBox.size === 'その他') && (
-                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                        サイズ自由入力
-                                        <input
-                                            value={selectedBox.size === 'その他' ? '' : selectedBox.size || ''}
-                                            placeholder="サイズを入力してください"
-                                            onChange={(event) => handleSelectedBoxUpdate({ size: event.target.value })}
-                                            style={{ width: '100%' }}
-                                        />
-                                    </label>
+                                
+                                {(!selectedBox.type || selectedBox.type === 'JB') ? (
+                                    <>
+                                        <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                            サイズ
+                                            <select
+                                                value={['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') ? selectedBox.size : 'その他'}
+                                                onChange={(event) => {
+                                                    const val = event.target.value;
+                                                    if (val === 'その他') {
+                                                        handleSelectedBoxUpdate({ size: 'その他' });
+                                                    } else {
+                                                        handleSelectedBoxUpdate({ size: val });
+                                                    }
+                                                }}
+                                                style={{ width: '100%', padding: '0.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                            >
+                                                <option value="100×100×100">100×100×100</option>
+                                                <option value="150×150×100">150×150×100</option>
+                                                <option value="200×200×150">200×200×150</option>
+                                                <option value="300×300×200">300×300×200</option>
+                                                <option value="その他">その他（自由入力）</option>
+                                            </select>
+                                        </label>
+                                        {(!['100×100×100', '150×150×100', '200×200×150', '300×300×200'].includes(selectedBox.size || '') || selectedBox.size === 'その他') && (
+                                            <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                                サイズ自由入力
+                                                <input
+                                                    value={selectedBox.size === 'その他' ? '' : selectedBox.size || ''}
+                                                    placeholder="サイズを入力してください"
+                                                    onChange={(event) => handleSelectedBoxUpdate({ size: event.target.value })}
+                                                    style={{ width: '100%' }}
+                                                />
+                                            </label>
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                            サイズ
+                                            <select
+                                                value={['標準', '防雨型', 'ダブル', 'トリプル'].includes(selectedBox.size || '') ? selectedBox.size : 'その他'}
+                                                onChange={(event) => {
+                                                    const val = event.target.value;
+                                                    if (val === 'その他') {
+                                                        handleSelectedBoxUpdate({ size: 'その他' });
+                                                    } else {
+                                                        handleSelectedBoxUpdate({ size: val });
+                                                    }
+                                                }}
+                                                style={{ width: '100%', padding: '0.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                            >
+                                                <option value="標準">標準</option>
+                                                <option value="防雨型">防雨型</option>
+                                                <option value="ダブル">ダブル</option>
+                                                <option value="トリプル">トリプル</option>
+                                                <option value="その他">その他（自由入力）</option>
+                                            </select>
+                                        </label>
+                                        {(!['標準', '防雨型', 'ダブル', 'トリプル'].includes(selectedBox.size || '') || selectedBox.size === 'その他') && (
+                                            <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                                サイズ自由入力
+                                                <input
+                                                    value={selectedBox.size === 'その他' ? '' : selectedBox.size || ''}
+                                                    placeholder="サイズを入力してください"
+                                                    onChange={(event) => handleSelectedBoxUpdate({ size: event.target.value })}
+                                                    style={{ width: '100%' }}
+                                                />
+                                            </label>
+                                        )}
+                                    </>
                                 )}
+
                                 <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                                     備考
                                     <input
@@ -2073,11 +2614,11 @@ export default function DrawingPlotScreen({
                 </button>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.875rem', textAlign: 'left' }}>
                     {workspaceMode === 'construction'
-                        ? '配線はクリックで始点、連続クリックで曲がり点、ダブルクリック・Enter・確定で終了。Escでキャンセルできます。'
+                        ? 'シンボルはクリックで配置、選択ツールでドラッグ移動、Deleteで削除、右側の属性で名称変更できます。'
                         : '記号を選んで図面上をクリックすると数量拾い用のマークを配置できます。'}
                 </div>
                 <button className="btn btn-primary" onClick={workspaceMode === 'construction' ? handleApplyWires : handleApply}>
-                    <MapPinned size={18} /> {workspaceMode === 'construction' ? '配線を見積へ反映' : '見積項目へ反映'}
+                    <MapPinned size={18} /> {workspaceMode === 'construction' ? '施工図数量を見積へ反映' : '見積項目へ反映'}
                 </button>
             </div>
             {openPalettePanel && (
@@ -2146,6 +2687,99 @@ export default function DrawingPlotScreen({
                     <option key={label} value={label} />
                 ))}
             </datalist>
+
+            {/* 施工図保存済み案件一覧モーダル */}
+            {isProjectListModalOpen && (
+                <div
+                    onClick={() => setIsProjectListModalOpen(false)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        zIndex: 100,
+                        background: 'rgba(15, 23, 42, 0.42)',
+                        backdropFilter: 'blur(4px)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    }}
+                >
+                    <div
+                        onClick={(event) => event.stopPropagation()}
+                        style={{
+                            background: 'white',
+                            borderRadius: 'var(--radius-lg)',
+                            boxShadow: 'var(--shadow-xl)',
+                            width: '100%',
+                            maxWidth: '640px',
+                            maxHeight: '80vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            padding: '1.5rem',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.2rem' }}>
+                            <strong style={{ fontSize: '1.15rem' }}>保存済み施工図案件</strong>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={() => setIsProjectListModalOpen(false)}
+                                style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem' }}
+                            >
+                                閉じる
+                            </button>
+                        </div>
+
+                        <div style={{ flex: 1, overflowY: 'auto', display: 'grid', gap: '0.65rem' }}>
+                            {savedProjects.length === 0 ? (
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '2rem 0', textAlign: 'center' }}>
+                                    保存された施工図案件はありません。
+                                </p>
+                            ) : (
+                                savedProjects.map((proj) => (
+                                    <div
+                                        key={proj.id}
+                                        style={{
+                                            border: '1px solid var(--border-color)',
+                                            borderRadius: 'var(--radius-md)',
+                                            padding: '0.8rem 1rem',
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                            gap: '1rem',
+                                            background: activeProjectId === proj.id ? '#eff6ff' : 'white',
+                                            borderColor: activeProjectId === proj.id ? 'var(--primary)' : undefined,
+                                        }}
+                                    >
+                                        <div style={{ minWidth: 0, textAlign: 'left' }}>
+                                            <div style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.15rem', color: 'var(--text-main)' }}>
+                                                {proj.name}
+                                            </div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                更新: {proj.updatedAt} | {proj.drawing.pages?.length || 1}ページ | 配線 {proj.construction.wires?.length || 0}本 | シンボル {Object.values(proj.construction.pages ?? {}).reduce((sum, p) => sum + (p.boxes?.length ?? 0), 0)}個
+                                            </div>
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '0.45rem', flexShrink: 0 }}>
+                                            <button
+                                                className="btn btn-primary"
+                                                onClick={() => handleLoadProjectUI(proj)}
+                                                style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}
+                                            >
+                                                開く
+                                            </button>
+                                            <button
+                                                className="btn btn-secondary"
+                                                onClick={() => handleDeleteProjectUI(proj.id, proj.name)}
+                                                style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', color: '#ef4444' }}
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

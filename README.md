@@ -1,73 +1,79 @@
-# React + TypeScript + Vite
+# 電工見積もりくん ⚡📄
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+電気工事士のための、見積書・施工図・材料拾いをAIで一括作成する業務支援アプリ。
 
-Currently, two official plugins are available:
+現場情報を入力するだけで、見積書 / 材料リスト / 施工図 / 作業工程 / お客様への説明資料まで自動作成することを目指しています。経験が浅い職人でも、ベテラン並みの見積作成を短時間で行えることがゴールです。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+> 旧名称「見積もり作るくん」。Web版（Vite + React + TypeScript）とデスクトップ版（Electron / macOS）の両対応。
 
-## React Compiler
+## 解決したい課題
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+電気工事の現場では、見積作成に時間がかかる・数量拾いが面倒・図面作成が手間・金額のバラつき・材料の拾い忘れ、といった問題が日常的に発生しています。本アプリはこれらをAIと自動化で大幅に削減します。
 
-## Expanding the ESLint configuration
+## 主な機能
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+| 機能 | 内容 | 状況 |
+|---|---|---|
+| 見積作成 | 工事項目・数量・単価・金額を入力/自動集計 | ✅ 実装済み |
+| 図面プロット | 図面（画像/PDF）にシンボル・配線をプロットし数量を自動集計 | ✅ 実装済み |
+| 施工図作成 | 配線・ボックス描画、縮尺から配線長を計算 | ✅ 実装済み |
+| 材料拾い | 図面プロットから必要材料を見積へ反映 | ✅ 実装済み |
+| PDF / Excel出力 | 見積書をPDF・Excelで出力 | ✅ 実装済み |
+| 参考単価管理 | 単価マスタ（約80品目）の編集、銅建値の反映 | ✅ 実装済み |
+| 見積履歴 | 保存済み見積の一覧・読込 | ✅ 実装済み |
+| 原価管理 | 材料原価・人件費・利益率をリアルタイム表示 | ✅ 実装済み |
+| 人工自動計算 | 工事項目から必要人工を歩掛で自動算出 | ✅ 実装済み |
+| 請求書出力 | 見積書/請求書を切替してPDF出力 | ✅ 実装済み |
+| 材料表出力 | 材料を集計し手配チェック欄付きPDFを出力 | ✅ 実装済み |
+| 顧客管理 | 顧客マスタ・見積履歴の紐付け・自動登録 | ✅ 実装済み |
+| AI見積作成 ほか将来機能 | 構想中 | 🚧 [ROADMAP.md](./ROADMAP.md) 参照 |
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+想定ユーザー: 一人親方、小規模電気工事店、リフォーム会社、設備会社、電気工事見習い
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+**コンセプト: 「電気工事士が現場に集中できるよう、事務作業をAIが代わりに行う。」**
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+---
+
+## 🛠 動作環境
+
+- **OS**: macOS (Mac)
+- **Node.js**: v18以上推奨
+- **パッケージマネージャー**: npm
+
+## 🚀 クイックスタート
+
+```bash
+# 1. 依存パッケージのインストール
+npm install
+
+# 2. 開発モードで起動（Vite + Electron 同時起動、ホットリロード対応）
+npm run dev:desktop
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+> [!NOTE]
+> 自動的に Vite 開発サーバーが立ち上がった後、Electron のウィンドウが開きます。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 📦 本番用アプリのビルド (.app / .dmg)
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build:desktop
 ```
+
+成果物は `dist-desktop/` に生成されます:
+
+- `電工見積もりくん-x.x.x-arm64.dmg` — Mac用インストーラー
+- `mac-arm64/電工見積もりくん.app` — ダブルクリックで実行できるアプリ本体
+- `電工見積もりくん-x.x.x-arm64-mac.zip` — アプリ本体の圧縮ファイル
+
+## 🌐 Webブラウザ版として起動
+
+- 開発サーバー: `npm run dev`（http://localhost:5173）
+- Web用ビルド: `npm run build`（成果物は `dist/`）
+
+## 📂 ドキュメント構成
+
+| ファイル | 内容 |
+|---|---|
+| [README.md](./README.md) | プロジェクト概要・セットアップ手順（このファイル） |
+| [PROJECT_NOTES.md](./PROJECT_NOTES.md) | 技術仕様・アーキテクチャ・開発メモ |
+| [ROADMAP.md](./ROADMAP.md) | 構想機能と実装状況、今後の開発計画 |

@@ -3,7 +3,7 @@ import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import ExcelJS from 'exceljs';
 import type { EstimateItem, EstimateInfo } from '../types';
-import { ArrowLeft, Download, FileText, FileSpreadsheet, Save } from 'lucide-react';
+import { ArrowLeft, Download, FileText, FileSpreadsheet, Save, Receipt, Package } from 'lucide-react';
 
 // ===== Excel出力設定（ここで出力先のセルや列を一括設定できます） =====
 const EXCEL_CONFIG = {
@@ -38,9 +38,12 @@ interface EstimateScreenProps {
 
 export default function EstimateScreen({ items, info, onBack, onSave }: EstimateScreenProps) {
     const estimateRef = useRef<HTMLDivElement>(null);
+    const materialRef = useRef<HTMLDivElement>(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [hasTemplate, setHasTemplate] = useState(false);
     const [hasInvoiceTemplate, setHasInvoiceTemplate] = useState(false);
+    const [docType, setDocType] = useState<'estimate' | 'invoice'>('estimate');
+    const isInvoice = docType === 'invoice';
 
     useEffect(() => {
         if (localStorage.getItem('mitsumori-template')) {
@@ -295,30 +298,70 @@ export default function EstimateScreen({ items, info, onBack, onSave }: Estimate
         }
     };
 
+    const renderElementToPdf = async (element: HTMLElement, fileName: string) => {
+        const canvas = await html2canvas(element, {
+            scale: 2, // 2x resolution
+            backgroundColor: '#ffffff',
+            useCORS: true,
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('p', 'mm', 'a4');
+
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+        pdf.save(fileName);
+    };
+
     const handlePdfSave = async () => {
         if (!estimateRef.current) return;
         setIsGenerating(true);
 
         try {
-            const element = estimateRef.current;
-            // To improve pdf quality, temporarily force white background if needed.
-            const canvas = await html2canvas(element, {
-                scale: 2, // 2x resolution
-                backgroundColor: '#ffffff',
-                useCORS: true,
-            });
-
-            const imgData = canvas.toDataURL('image/png');
-            const pdf = new jsPDF('p', 'mm', 'a4');
-
-            const pdfWidth = pdf.internal.pageSize.getWidth();
-            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-
-            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-            pdf.save(`見積書_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.pdf`);
+            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            await renderElementToPdf(estimateRef.current, `${isInvoice ? '請求書' : '見積書'}_${dateStr}.pdf`);
         } catch (error) {
             console.error('PDF generation failed:', error);
             alert('PDFの作成に失敗しました。');
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+
+    // 材料表: 電線・配管・配線器具・機器を品名単位で集計
+    const MATERIAL_CATEGORIES = ['電線', '配管', '配線器具', '機器'];
+    const materialItems = (() => {
+        const map = new Map<string, { name: string; category: string; quantity: number; unit: string }>();
+        selectedItems
+            .filter(i => MATERIAL_CATEGORIES.includes(i.category) && i.name)
+            .forEach(i => {
+                const key = `${i.name}__${i.unit}`;
+                const qty = Number(i.quantity) || 0;
+                const existing = map.get(key);
+                if (existing) {
+                    existing.quantity += qty;
+                } else {
+                    map.set(key, { name: i.name, category: i.category, quantity: qty, unit: i.unit });
+                }
+            });
+        return Array.from(map.values());
+    })();
+
+    const handleMaterialPdfSave = async () => {
+        if (!materialRef.current) return;
+        if (materialItems.length === 0) {
+            alert('材料表に出力できる項目がありません。');
+            return;
+        }
+        setIsGenerating(true);
+        try {
+            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            await renderElementToPdf(materialRef.current, `材料表_${dateStr}.pdf`);
+        } catch (error) {
+            console.error('Material PDF generation failed:', error);
+            alert('材料表PDFの作成に失敗しました。');
         } finally {
             setIsGenerating(false);
         }
@@ -330,7 +373,33 @@ export default function EstimateScreen({ items, info, onBack, onSave }: Estimate
 
     return (
         <div className="container" style={{ paddingBottom: '80px' }}>
-            <h1>見積書</h1>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <h1 style={{ margin: 0 }}>{isInvoice ? '請求書' : '見積書'}</h1>
+                <div style={{ display: 'flex', gap: '0.25rem', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', padding: '0.25rem' }}>
+                    <button
+                        className="btn"
+                        onClick={() => setDocType('estimate')}
+                        style={{
+                            padding: '0.4rem 0.9rem', fontSize: '0.875rem', border: 'none',
+                            backgroundColor: !isInvoice ? 'var(--primary)' : 'transparent',
+                            color: !isInvoice ? '#fff' : 'var(--text-muted)'
+                        }}
+                    >
+                        <FileText size={14} /> 見積書
+                    </button>
+                    <button
+                        className="btn"
+                        onClick={() => setDocType('invoice')}
+                        style={{
+                            padding: '0.4rem 0.9rem', fontSize: '0.875rem', border: 'none',
+                            backgroundColor: isInvoice ? '#10b981' : 'transparent',
+                            color: isInvoice ? '#fff' : 'var(--text-muted)'
+                        }}
+                    >
+                        <Receipt size={14} /> 請求書
+                    </button>
+                </div>
+            </div>
 
             {selectedItems.length === 0 ? (
                 <div className="empty-state card">
@@ -343,19 +412,27 @@ export default function EstimateScreen({ items, info, onBack, onSave }: Estimate
                 <>
                     <div className="card" ref={estimateRef} style={{ padding: '2rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', color: 'var(--primary)' }}>
-                            <FileText size={28} />
-                            <h2 style={{ fontSize: '1.5rem', border: 'none', margin: 0, padding: 0 }}>御 見 積 書</h2>
+                            {isInvoice ? <Receipt size={28} /> : <FileText size={28} />}
+                            <h2 style={{ fontSize: '1.5rem', border: 'none', margin: 0, padding: 0 }}>{isInvoice ? '御 請 求 書' : '御 見 積 書'}</h2>
                         </div>
+
+                        {(info.customerName || info.projectName) && (
+                            <div style={{ marginBottom: '1rem', lineHeight: '1.6' }}>
+                                {info.customerName && <p style={{ fontSize: '1.1rem', fontWeight: 600, borderBottom: '1px solid var(--border-color)', display: 'inline-block', paddingRight: '2rem' }}>{info.customerName}</p>}
+                                {info.projectName && <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>工事名: {info.projectName}</p>}
+                                {info.address && <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>工事場所: {info.address}</p>}
+                            </div>
+                        )}
 
                         <p style={{ textAlign: 'right', color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: '1.5' }}>
                             {info.estimateNumber && (
-                                <>見積番号: {info.estimateNumber}<br /></>
+                                <>{isInvoice ? '請求番号' : '見積番号'}: {info.estimateNumber}<br /></>
                             )}
                             発行日: {new Date().toLocaleDateString('ja-JP')}
                         </p>
 
                         <div style={{ padding: '1rem', backgroundColor: 'var(--bg-color)', borderRadius: 'var(--radius-md)', marginBottom: '2rem', textAlign: 'center' }}>
-                            <p style={{ fontSize: '1.125rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>御見積金額（税込）</p>
+                            <p style={{ fontSize: '1.125rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>{isInvoice ? '御請求金額（税込）' : '御見積金額（税込）'}</p>
                             <h3 style={{ fontSize: '2rem', color: 'var(--primary)', fontWeight: 'bold' }}>
                                 {formatCurrency(total)}
                             </h3>
@@ -406,9 +483,49 @@ export default function EstimateScreen({ items, info, onBack, onSave }: Estimate
                                 </tbody>
                             </table>
                         </div>
-                        <p style={{ marginTop: '2rem', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-                            備考：本見積りの有効期限は発行日より30日間とします。
+                        <p style={{ marginTop: '2rem', fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+                            {isInvoice
+                                ? <>備考：お支払期限は発行日より30日以内とさせていただきます。<br />恐れ入りますが、振込手数料はお客様にてご負担願います。</>
+                                : <>備考：本見積りの有効期限は発行日より30日間とします。</>}
                         </p>
+                    </div>
+
+                    {/* 材料表PDF出力用の非表示レイアウト */}
+                    <div style={{ position: 'fixed', left: '-10000px', top: 0 }}>
+                        <div ref={materialRef} style={{ width: '760px', padding: '2rem', backgroundColor: '#ffffff', color: '#111827', fontFamily: 'inherit' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                                <h2 style={{ fontSize: '1.5rem', margin: 0, padding: 0, border: 'none' }}>材 料 表</h2>
+                            </div>
+                            <p style={{ marginBottom: '0.25rem' }}>{info.projectName && `工事名: ${info.projectName}`}</p>
+                            <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
+                                {info.estimateNumber && `見積番号: ${info.estimateNumber} ／ `}作成日: {new Date().toLocaleDateString('ja-JP')}
+                            </p>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ border: '1px solid #d1d5db', padding: '0.5rem', backgroundColor: '#f3f4f6', textAlign: 'left' }}>分類</th>
+                                        <th style={{ border: '1px solid #d1d5db', padding: '0.5rem', backgroundColor: '#f3f4f6', textAlign: 'left' }}>品名</th>
+                                        <th style={{ border: '1px solid #d1d5db', padding: '0.5rem', backgroundColor: '#f3f4f6', textAlign: 'right' }}>数量</th>
+                                        <th style={{ border: '1px solid #d1d5db', padding: '0.5rem', backgroundColor: '#f3f4f6', textAlign: 'left' }}>単位</th>
+                                        <th style={{ border: '1px solid #d1d5db', padding: '0.5rem', backgroundColor: '#f3f4f6', textAlign: 'left', width: '20%' }}>手配</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {materialItems.map((m, idx) => (
+                                        <tr key={idx}>
+                                            <td style={{ border: '1px solid #d1d5db', padding: '0.5rem' }}>{m.category}</td>
+                                            <td style={{ border: '1px solid #d1d5db', padding: '0.5rem' }}>{m.name}</td>
+                                            <td style={{ border: '1px solid #d1d5db', padding: '0.5rem', textAlign: 'right' }}>{m.quantity}</td>
+                                            <td style={{ border: '1px solid #d1d5db', padding: '0.5rem' }}>{m.unit}</td>
+                                            <td style={{ border: '1px solid #d1d5db', padding: '0.5rem' }}>□</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            <p style={{ marginTop: '1rem', fontSize: '0.8rem', color: '#6b7280' }}>
+                                ※ 数量には予備・ロスを含んでいません。手配時に余裕を見てください。
+                            </p>
+                        </div>
                     </div>
 
                     <div className="fixed-bottom-bar" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
@@ -448,12 +565,22 @@ export default function EstimateScreen({ items, info, onBack, onSave }: Estimate
 
                         <button
                             className="btn btn-primary"
+                            onClick={handleMaterialPdfSave}
+                            disabled={isGenerating}
+                            style={{ minWidth: 'fit-content', backgroundColor: '#f59e0b' }}
+                        >
+                            <Package size={16} />
+                            {isGenerating ? '作成中...' : '材料表PDF'}
+                        </button>
+
+                        <button
+                            className="btn btn-primary"
                             onClick={handlePdfSave}
                             disabled={isGenerating}
                             style={{ flex: 1, backgroundColor: '#4f46e5' }}
                         >
                             <Download size={16} />
-                            {isGenerating ? '作成中...' : 'PDF見積書を出力'}
+                            {isGenerating ? '作成中...' : `PDF${isInvoice ? '請求書' : '見積書'}を出力`}
                         </button>
                     </div>
                 </>
